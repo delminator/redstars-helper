@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Redstars Helper</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: system-ui, sans-serif;
+  background: #1a1a2e; color: #eee;
+  display: flex; align-items: center; justify-content: center;
+  min-height: 100vh; padding: 20px;
+}
+.card {
+  background: #16213e; border-radius: 12px; padding: 32px 40px;
+  max-width: 480px; box-shadow: 0 10px 40px rgba(0,0,0,0.4);
+}
+h1 { color: #4a9; font-size: 1.4em; margin-bottom: 8px; }
+.subtitle { color: #888; font-size: 0.9em; margin-bottom: 24px; }
+.status { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; font-family: monospace; font-size: 0.95em; }
+.status .dot { width: 10px; height: 10px; border-radius: 50%; background: #888; }
+.status.up .dot { background: #4a9; box-shadow: 0 0 6px #4a9; }
+.status.down .dot { background: #e94560; }
+button {
+  background: #4a9; color: #1a1a2e; border: none; border-radius: 8px;
+  padding: 10px 20px; font-size: 0.95em; cursor: pointer; margin-right: 8px;
+  font-weight: 600;
+}
+button:hover { filter: brightness(1.15); }
+button.secondary { background: transparent; color: #4a9; border: 1px solid #4a9; }
+.endpoint { background: #0d1117; padding: 8px 12px; border-radius: 4px; font-family: monospace; font-size: 0.85em; color: #4a9; margin: 4px 0; }
+small { color: #666; display: block; margin-top: 16px; font-size: 0.8em; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🚀 Redstars Helper</h1>
+  <p class="subtitle">Local agent for USB scale, WebGPU prefs, and demo serving.</p>
+
+  <div id="serverStatus" class="status">
+    <span class="dot"></span>
+    <span id="statusText">checking…</span>
+  </div>
+
+  <div style="margin-top:16px;">
+    <div class="endpoint">http://localhost:8080/</div>
+    <div class="endpoint">http://localhost:8080/helper/status</div>
+  </div>
+
+  <div style="margin-top:24px;">
+    <button onclick="openBrowser()">Open demo in browser</button>
+    <button class="secondary" onclick="restartHelper()">Restart helper</button>
+  </div>
+
+  <small id="versionInfo">v0.1.0 — auto-updates from GitHub releases</small>
+</div>
+
+<script type="module">
+import { invoke } from "https://esm.sh/@tauri-apps/api@2/core";
+import { check } from "https://esm.sh/@tauri-apps/plugin-updater@2";
+
+async function poll() {
+  try {
+    const r = await fetch('http://localhost:8080/helper/status', { signal: AbortSignal.timeout(800) });
+    const ok = r.ok;
+    document.getElementById('serverStatus').className = 'status ' + (ok ? 'up' : 'down');
+    document.getElementById('statusText').textContent = ok ? 'helper running on :8080' : 'helper not responding';
+  } catch {
+    document.getElementById('serverStatus').className = 'status down';
+    document.getElementById('statusText').textContent = 'helper offline';
+  }
+}
+poll(); setInterval(poll, 2000);
+
+window.openBrowser = () => invoke('open_demo');
+window.restartHelper = () => invoke('restart_helper');
+
+// Optional updater check on mount
+(async () => {
+  try {
+    const update = await check();
+    if (update?.available) {
+      document.getElementById('versionInfo').textContent =
+        `v0.1.0 → v${update.version} available — install on quit`;
+    }
+  } catch {}
+})();
+</script>
+</body>
+</html>

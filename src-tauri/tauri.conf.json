@@ -1,0 +1,66 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Redstars Helper",
+  "version": "0.1.0",
+  "identifier": "fr.redlinks.redstars-helper",
+  "build": {
+    "frontendDist": "../src",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "title": "Redstars Helper",
+        "label": "main",
+        "width": 540,
+        "height": 480,
+        "resizable": true,
+        "fullscreen": false,
+        "decorations": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:8080 http://localhost:9999 https://esm.sh https://github.com",
+      "capabilities": ["default"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["deb", "appimage"],
+    "category": "DeveloperTool",
+    "shortDescription": "Redstars local helper",
+    "longDescription": "Local agent that runs the Redstars demo helper (USB scale, Firefox prefs writer, demo HTTP server). Auto-updates from GitHub releases.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.png"
+    ],
+    "resources": [
+      "../../../scripts/image-autoencoder/output/demo/helper.py",
+      "../../../scripts/image-autoencoder/output/demo/index.html",
+      "../../../scripts/image-autoencoder/output/demo/sw.js",
+      "../../../scripts/image-autoencoder/output/demo/decoder.onnx",
+      "../../../scripts/image-autoencoder/output/demo/encoder.onnx",
+      "../../../scripts/image-autoencoder/output/demo/demo_data.json"
+    ],
+    "linux": {
+      "deb": {
+        "depends": ["python3", "python3-pip"]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/delminator/redstars-helper/releases/latest/download/latest.json"
+      ],
+      "dialog": true,
+      "pubkey": "REPLACE_WITH_GENERATED_PUBLIC_KEY"
+    }
+  }
+}
