@@ -1,0 +1,109 @@
+name: Release
+
+# Triggers on:
+#   - git tag push (vX.Y.Z) → builds + publishes a versioned release
+#   - manual workflow_dispatch → useful for testing the matrix
+#
+# Matrix:
+#   - ubuntu-latest  → .deb + .AppImage
+#   - macos-latest   → .dmg + .app.tar.gz
+#   - windows-latest → .msi + .exe
+#
+# Secrets required (GitHub repo settings → Actions → Secrets):
+#   - TAURI_SIGNING_PRIVATE_KEY      : minisign-format private key
+#   - TAURI_SIGNING_PRIVATE_KEY_PASSWORD : empty string if generated --password ""
+# Optional (for OS code-signing):
+#   - APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY
+#   - APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID  (notarization)
+#   - WINDOWS_CERTIFICATE / WINDOWS_CERTIFICATE_PASSWORD
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.3.0)'
+        required: true
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'ubuntu-latest'
+            args: ''
+          - platform: 'macos-latest'
+            args: '--target universal-apple-darwin'
+          - platform: 'windows-latest'
+            args: ''
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            patchelf
+
+      - name: Install macOS Rust targets
+        if: matrix.platform == 'macos-latest'
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - run: npm ci
+
+      - name: Build + sign + publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # macOS notarization (optional — leave secrets unset if no Apple account)
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: 'Redstars Helper ${{ github.event.inputs.tag || github.ref_name }}'
+          releaseBody: |
+            See CHANGELOG.md for details.
+
+            **Auto-update:** existing v0.2.0+ installs will pick this up via the Tauri updater.
+
+            ## Install
+
+            - **Linux** — `sudo apt install ./redstars-helper_*.deb`
+            - **macOS** — open the `.dmg`
+            - **Windows** — run the `.msi`
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
