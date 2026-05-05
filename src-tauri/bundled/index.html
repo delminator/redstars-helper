@@ -1,0 +1,2108 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E%F0%9F%96%BC%EF%B8%8F%3C/text%3E%3C/svg%3E">
+<title>Autoencoder v2 RGB — 256 colors, soft palette selection</title>
+<style>
+:root {
+  /* These are overwritten by applyPaletteTheme() — fallback values used only
+     before the palette JS has loaded. */
+  --c-bg: var(--c-bg);
+  --c-panel: var(--c-panel);
+  --c-card: var(--c-card);
+  --c-text: var(--c-text);
+  --c-text-muted: var(--c-text-muted);
+  --c-text-dim: var(--c-text-dim);
+  --c-accent: var(--c-accent);
+  --c-warning: var(--c-warning);
+  --c-success: var(--c-success);
+  --c-info: var(--c-info);
+  --c-error: var(--c-error);
+  --c-canvas-bg: #111;
+  --c-input-bg: var(--c-input-bg);
+  --c-border: var(--c-border);
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: var(--c-bg); color: var(--c-text);
+  font-family: system-ui, sans-serif; padding: 20px;
+  transition: background 250ms ease, color 250ms ease;
+}
+h1 { text-align: center; margin-bottom: 5px; font-size: 1.3em; }
+.subtitle { text-align: center; color: var(--c-text-muted); margin-bottom: 15px; font-size: 0.8em; }
+
+.status-bar {
+  background: var(--c-panel); border-radius: 8px; padding: 10px 15px; margin-bottom: 15px;
+  font-family: monospace; font-size: 0.75em; color: var(--c-accent);
+  display: flex; gap: 20px; flex-wrap: wrap; justify-content: center;
+  transition: background 250ms ease, color 250ms ease;
+}
+.status-bar .stat { color: var(--c-text-muted); }
+.status-bar .stat b { color: var(--c-accent); }
+
+.palette-preview { display: flex; flex-wrap: wrap; gap: 1px; margin-bottom: 15px; justify-content: center; }
+.palette-preview .swatch { width: 8px; height: 8px; border-radius: 1px; }
+
+.gallery { display: flex; flex-direction: column; gap: 20px; }
+.card {
+  background: var(--c-card); border-radius: 10px; padding: 15px;
+  transition: background 250ms ease;
+}
+.card h3 { font-size: 0.85em; padding: 4px 0 8px; text-align: center; color: var(--c-text-dim); }
+.card h3 .acc { color: var(--c-accent); font-size: 0.9em; }
+.card h3 .time { color: var(--c-warning); font-size: 0.8em; margin-left: 8px; }
+
+.compare-row {
+  display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 10px;
+}
+.compare-box { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.compare-box .compare-label { font-size: 0.65em; }
+.compare-box canvas {
+  border-radius: 4px; background: var(--c-canvas-bg); width: 256px; height: 256px;
+  image-rendering: pixelated; image-rendering: -moz-crisp-edges;
+}
+
+.sizes-row {
+  display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; align-items: flex-end;
+  margin-top: 10px;
+}
+.size-box { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.size-box .size-label { font-size: 0.6em; color: var(--c-text-muted); }
+.size-box canvas {
+  border-radius: 4px; background: var(--c-canvas-bg);
+  image-rendering: pixelated; image-rendering: -moz-crisp-edges;
+}
+
+.hash-section {
+  margin-top: 10px; padding: 10px; background: var(--c-panel); border-radius: 6px;
+  transition: background 250ms ease;
+}
+.hash-section .hash-header {
+  display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;
+}
+.hash-section .hash-label { font-size: 0.7em; color: var(--c-accent); }
+.hash-section .hash-meta { font-size: 0.6em; color: var(--c-text-muted); }
+.hash-section textarea {
+  width: 100%; height: 50px; background: var(--c-input-bg); color: var(--c-accent);
+  border: 1px solid var(--c-border);
+  border-radius: 4px; padding: 6px; font-family: monospace; font-size: 0.55em;
+  resize: vertical; line-height: 1.3; word-break: break-all;
+}
+.hash-section .decode-btn {
+  margin-top: 4px; padding: 4px 12px; background: var(--c-success); color: var(--c-text);
+  border: none; border-radius: 4px; font-size: 0.7em; cursor: pointer;
+  transition: background 250ms ease;
+}
+.hash-section .decode-btn:hover { filter: brightness(1.15); }
+.hash-section .decode-status { font-size: 0.6em; margin-left: 8px; }
+
+.info { text-align: center; margin-top: 12px; color: var(--c-text-muted); font-size: 0.7em; }
+
+/* (Old WebGPU popup CSS removed — superseded by helper panel.) */
+canvas, img { image-rendering: var(--img-rendering, pixelated); }
+</style>
+</head>
+<body>
+
+<h1>Autoencoder v2 RGB — soft palette selection</h1>
+<p class="subtitle" id="subtitleInfo">loading...</p>
+
+<div class="status-bar">
+  <span class="stat">ONNX: <b id="onnxStatus">loading...</b></span>
+  <span class="stat">Model: <b id="modelSize">-</b></span>
+  <span class="stat">Init: <b id="initTime">-</b></span>
+  <span class="stat">Latent: <b>4&times;32&times;32 &times; 2bit = 1024B</b></span>
+  <span class="stat">Render: <b id="renderMode">-</b></span>
+  <span class="stat">Helper: <b id="helperStatus" style="color:var(--c-text-muted);">checking...</b></span>
+  <span class="stat">Avg acc: <b id="avgAcc">-</b></span>
+</div>
+
+<!-- Helper-driven panel: shows up only when localhost:9999 helper is reachable -->
+<div id="helperPanel" style="max-width:780px;margin:8px auto 12px auto;background:var(--c-panel);border:1px solid var(--c-border);border-radius:8px;padding:12px 16px;font-size:0.85em;">
+  <div id="helperPanelTitle" style="font-weight:bold;color:var(--c-text-muted);margin-bottom:8px;">⚪ Native helper checking…</div>
+  <div id="helperPanelHint" style="font-size:0.85em;color:var(--c-text-muted);margin-bottom:8px;display:none;">
+    Helper API at <code style="color:var(--c-accent);">/helper/*</code> not responding. To enable 1-click WebGPU + USB list + balance, run the unified server:
+    <code style="display:inline-block;background:var(--c-input-bg);padding:2px 6px;border-radius:3px;margin-left:4px;">python3 scripts/image-autoencoder/output/demo/helper.py</code>
+    instead of <code>python -m http.server 8080</code>.
+  </div>
+  <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start;">
+    <div style="flex:1;min-width:200px;">
+      <div style="color:var(--c-text-muted);font-size:0.85em;margin-bottom:6px;">Firefox prefs</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">
+        <button id="helperEnableWebGPU" onclick="helperEnableWebGPU()" style="padding:6px 14px;background:var(--c-info);color:var(--c-text);border:none;border-radius:6px;cursor:pointer;font-size:0.95em;">⚡ Enable WebGPU</button>
+        <button id="helperResetWebGPU" onclick="helperResetWebGPU()" style="padding:6px 14px;background:var(--c-error);color:var(--c-text);border:none;border-radius:6px;cursor:pointer;font-size:0.85em;">↺ Reset</button>
+      </div>
+      <div id="helperWebGPUResult" style="font-size:0.8em;color:var(--c-text-muted);margin-top:4px;font-family:monospace;word-break:break-all;"></div>
+    </div>
+    <div style="flex:1.5;min-width:240px;">
+      <div style="color:var(--c-text-muted);font-size:0.85em;margin-bottom:6px;display:flex;justify-content:space-between;">
+        <span>⚖ Balance (CH340 serial)</span>
+        <span id="scaleConn" style="font-size:0.9em;">—</span>
+      </div>
+      <div id="scaleReadout" style="font-family:monospace;font-size:2em;color:var(--c-success);text-align:center;font-weight:bold;background:var(--c-input-bg);border-radius:4px;padding:8px;border:1px solid var(--c-border);">—</div>
+      <div id="scaleMeta" style="font-family:monospace;font-size:0.7em;color:var(--c-text-muted);margin-top:4px;text-align:right;">—</div>
+    </div>
+    <div style="flex:2;min-width:300px;">
+      <div style="color:var(--c-text-muted);font-size:0.85em;margin-bottom:6px;display:flex;justify-content:space-between;">
+        <span>USB devices (live)</span>
+        <span id="helperUsbCount">—</span>
+      </div>
+      <div id="helperUsbList" style="font-family:monospace;font-size:0.78em;color:var(--c-text-dim);max-height:140px;overflow-y:auto;line-height:1.5;background:var(--c-input-bg);padding:6px 10px;border-radius:4px;border:1px solid var(--c-border);">—</div>
+    </div>
+  </div>
+</div>
+
+<div id="timingPanel" style="max-width:780px;margin:8px auto 12px auto;background:var(--c-panel);border:1px solid var(--c-border);border-radius:8px;padding:12px 16px;font-family:monospace;font-size:0.72em;color:var(--c-text);">
+  <div style="font-weight:bold;color:var(--c-accent);margin-bottom:6px;">⏱ Timing breakdown <span style="float:right;font-weight:normal;color:var(--c-text-muted);font-size:0.85em;" id="swState">SW: checking...</span></div>
+  <table style="width:100%;border-collapse:collapse;">
+    <thead style="color:var(--c-text-muted);">
+      <tr><th style="text-align:left;padding:2px 6px;">Step</th><th style="text-align:right;padding:2px 6px;">Source</th><th style="text-align:right;padding:2px 6px;">Size</th><th style="text-align:right;padding:2px 6px;">Duration</th></tr>
+    </thead>
+    <tbody id="timingRows">
+      <tr><td colspan="4" style="padding:4px 6px;color:var(--c-text-muted);">— measuring —</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<div style="display:flex;justify-content:center;gap:10px;margin-bottom:10px;flex-wrap:wrap;">
+  <label style="font-size:0.8em;cursor:pointer;display:flex;align-items:center;gap:6px;background:var(--c-card);padding:6px 14px;border-radius:6px;">
+    <input type="checkbox" id="pixelatedToggle" checked onchange="togglePixelated()">
+    <span>Pixelated rendering</span>
+  </label>
+  <label style="font-size:0.8em;display:flex;align-items:center;gap:6px;background:var(--c-card);padding:6px 14px;border-radius:6px;">
+    <span>Palette:</span>
+    <select id="paletteSelect" onchange="changePalette(this.value)" style="background:var(--c-panel);color:var(--c-text);border:1px solid var(--c-border);border-radius:4px;padding:3px 6px;font-size:0.95em;cursor:pointer;">
+      <option value="__uniform__">Uniform 4×4×4×4 (default)</option>
+    </select>
+    <span id="paletteSwapTime" style="font-size:0.85em;color:var(--c-text-muted);margin-left:8px;font-family:monospace;"></span>
+  </label>
+  <label style="font-size:0.8em;cursor:pointer;display:flex;align-items:center;gap:6px;background:var(--c-card);padding:6px 14px;border-radius:6px;" title="On (default): browser ONNX decode — what users see in prod (cached in IndexedDB after 1st visit). Off: Python-precomputed indices (slightly different on fine details).">
+    <input type="checkbox" id="liveOnnxToggle" checked onchange="toggleLiveOnnx()">
+    <span>Live ONNX decode</span>
+  </label>
+</div>
+<!-- ====== POC Workflow: Select → Encode → Hash → Decode ====== -->
+<div class="card" style="margin-bottom:20px;border:2px solid var(--c-accent);">
+  <h3 style="color:var(--c-accent);font-size:1em;margin-bottom:12px;">POC: Image → Hash (1024 bytes) → Image</h3>
+  <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;justify-content:center;">
+    <!-- Step 1: Select -->
+    <div style="text-align:center;">
+      <div style="font-size:0.7em;color:var(--c-text-muted);margin-bottom:6px;">1. Sélectionner</div>
+      <label style="display:inline-block;padding:8px 16px;background:var(--c-success);color:var(--c-text);border-radius:6px;cursor:pointer;font-size:0.8em;">
+        📁 Choisir une image
+        <input type="file" id="pocFileInput" accept="image/*" style="display:none" onchange="pocLoadImage(this)">
+      </label>
+      <div style="margin-top:8px;">
+        <canvas id="pocOriginal" width="256" height="256" style="width:255px;height:255px;border-radius:6px;background:var(--c-canvas-bg);image-rendering:pixelated;"></canvas>
+        <div style="font-size:0.6em;color:var(--c-text-muted);margin-top:4px;">Original (256 couleurs)</div>
+      </div>
+    </div>
+    <!-- Step 2: Hash -->
+    <div style="text-align:center;flex:1;min-width:200px;max-width:400px;">
+      <div style="font-size:0.7em;color:var(--c-text-muted);margin-bottom:6px;">2. Hash (1024 octets)</div>
+      <button id="pocEncodeBtn" onclick="pocEncode()" disabled
+        style="padding:8px 16px;background:var(--c-info);color:var(--c-text);border:none;border-radius:6px;cursor:pointer;font-size:0.8em;margin-bottom:8px;">
+        ⚡ Encoder
+      </button>
+      <span id="pocEncodeStatus" style="font-size:0.7em;color:var(--c-text-muted);margin-left:6px;"></span>
+      <textarea id="pocHash" rows="4" style="width:100%;background:var(--c-input-bg);color:var(--c-accent);border:1px solid var(--c-border);border-radius:4px;padding:6px;font-family:monospace;font-size:0.55em;resize:vertical;word-break:break-all;" placeholder="Le hash base64 apparaîtra ici..."></textarea>
+      <div style="font-size:0.6em;color:var(--c-text-muted);margin-top:2px;">
+        <span id="pocHashInfo">—</span>
+      </div>
+      <button id="pocDecodeBtn" onclick="pocDecode()" disabled
+        style="margin-top:6px;padding:8px 16px;background:var(--c-error);color:var(--c-text);border:none;border-radius:6px;cursor:pointer;font-size:0.8em;">
+        🔓 Décoder depuis le hash
+      </button>
+      <span id="pocDecodeStatus" style="font-size:0.7em;color:var(--c-text-muted);margin-left:6px;"></span>
+    </div>
+    <!-- Step 3: Decoded -->
+    <div style="text-align:center;">
+      <div style="font-size:0.7em;color:var(--c-text-muted);margin-bottom:6px;">3. Résultat</div>
+      <canvas id="pocDecoded" width="256" height="256" style="width:255px;height:255px;border-radius:6px;background:var(--c-canvas-bg);image-rendering:pixelated;"></canvas>
+      <div style="font-size:0.6em;margin-top:4px;"><span id="pocAccuracy" style="color:var(--c-accent);">—</span></div>
+    </div>
+  </div>
+</div>
+
+<div id="palettePreview" class="palette-preview"></div>
+<div id="gallery" class="gallery"></div>
+<p class="info" id="footerInfo"></p>
+
+<!-- ============= Research checklist ============= -->
+<div id="researchPanel" style="max-width:900px;margin:30px auto 12px auto;background:var(--c-panel);border:1px solid var(--c-border);border-radius:8px;padding:16px 20px;font-size:0.78em;color:var(--c-text);">
+  <div style="font-weight:bold;color:var(--c-accent);margin-bottom:8px;font-size:1.05em;display:flex;align-items:center;gap:8px;">
+    🧪 Pistes de recherche &amp; optimisations
+    <span style="margin-left:auto;font-size:0.78em;font-weight:normal;color:var(--c-text-muted);">
+      <a href="../../RESEARCH_PISTES.md" style="color:var(--c-accent);text-decoration:none;" target="_blank">📄 Doc complète</a>
+      —
+      <a href="javascript:resetResearchChecklist()" style="color:var(--c-text-muted);text-decoration:underline;">reset</a>
+    </span>
+  </div>
+  <div style="color:var(--c-text-muted);font-size:0.85em;margin-bottom:12px;">
+    Cocher au fur et à mesure des tests. Persistance localStorage.
+  </div>
+  <div id="researchList"></div>
+</div>
+
+<script>
+const RESEARCH_ITEMS = [
+  // === Done ===
+  { id: 'qat-2bit', cat: 'done', title: 'QAT latent 2-bit (Quantize2BitSTE)',
+    desc: 'STE pour quantization {-3,-1,+1,+3} pendant training — débloqué le décodage 1024 B',
+    src: 'Bengio et al. 2013 — STE classique' },
+  { id: 'vgg-perc', cat: 'done', title: 'VGG perceptual loss (poids 0.1)',
+    desc: 'torchvision VGG16 features relu1_2/2_2/3_3/4_3 — passé de 0.0698 → 0.0620 (-11%)',
+    src: 'Johnson et al. 2016 "Perceptual Losses..."' },
+  { id: 'avatars-4x', cat: 'done', title: 'Avatars 4× upweight dans cycle',
+    desc: 'NUM_SHARDS 18 → 20, positions 3, 7, 8, 9 — passes consécutives 8+9 = polish step. Passé à val 0.0553',
+    src: 'idée empirique' },
+  { id: 'warm-restart', cat: 'done', title: 'Warm restart depuis plateau',
+    desc: 'WARM_RESTART_LR=1e-4 reset scheduler/best, sortie de plateau',
+    src: 'Loshchilov & Hutter 2017 "SGDR"', srcUrl: 'https://arxiv.org/abs/1608.03983' },
+  { id: 'webgpu', cat: 'done', title: 'WebGPU provider (avec fallback WASM)',
+    desc: 'executionProviders: [webgpu, wasm] — actif Chrome/Edge/Safari, fallback Firefox stable',
+    src: 'ONNX Runtime — WebGPU EP', srcUrl: 'https://onnxruntime.ai/docs/tutorials/web/ep-webgpu.html' },
+  { id: 'sw-cache', cat: 'done', title: 'Service Worker cache assets ORT',
+    desc: 'Cache-first sur .onnx / .wasm / ort.min.js — 2e visite <1ms par asset',
+    src: 'sw.js dans output/demo/' },
+  { id: 'cache-api-prod', cat: 'done', title: 'Cache API + content-hash versioning (frontend prod)',
+    desc: 'redstars-models-v1, sha256 sur version.json',
+    src: 'apps/frontend/src/lib/ui/utils/model-cache.ts' },
+  { id: 'palette-renderer', cat: 'done', title: 'WebGPU/WebGL2 palette renderer (cards + indices texture)',
+    desc: 'Single 256×1 palette texture + R8UI indices texture + fragment shader. Palette swap = 1 KB upload, 0 JS pixel loop. WebGPU first, WebGL2 fallback. ⚠️ Page de test seulement, pas porté sur le frontend prod (avatars/thumbnails).',
+    src: 'index.html — initGPU / renderIndicesGPU / renderIndicesGL2' },
+  { id: 'idb-decoded', cat: 'done', title: 'IndexedDB cache des indices décodés',
+    desc: 'Keyed by hash + epoch. 1ère décode lente, suivantes ~0 ms. Survit au reload.',
+    src: 'index.html — openIDB / idbGet / idbPut' },
+  { id: 'frame-profiler', cat: 'done', title: 'Frame profiler HUD (style game engine)',
+    desc: 'rAF FPS + 128-frame graph + auto-instrumentation des opérations (renderCard, decode, USB poll, scale poll). F2 toggle.',
+    src: 'index.html — bottom of body' },
+  { id: 'agent-tauri', cat: 'done', title: 'Agent Tauri local + HTTPS via local.redlinks.fr',
+    desc: 'Helper Python wrappé en .deb 11 MB. HTTPS sur :8443 via cert Let\'s Encrypt DNS-01 — dashboards HTTPS détectent l\'agent sans mixed-content. Pattern Plex/Trezor.',
+    srcUrl: 'https://github.com/delminator/redstars-helper/releases',
+    src: 'redstars-helper repo + handlers/agents.go' },
+
+  // === Priority: high ROI ===
+  { id: 'lpips', cat: 'priority', title: 'LPIPS / DISTS loss au lieu de VGG',
+    desc: 'VGG features calibrées sur jugements humains (BAPPS). DISTS encore mieux pour low-bitrate. +5-15% perceptuel, jusqu\'à 27-53% sur DISTS. ~1 j retrain.',
+    src: 'richzhang/PerceptualSimilarity', srcUrl: 'https://github.com/richzhang/PerceptualSimilarity' },
+  { id: 'asym-arch', cat: 'priority', title: 'Architecture asymétrique encoder shallow + decoder heavy',
+    desc: 'Encoder 779K → ~200K, decoder 1.04M → ~2.5M. Recherche 2024 montre +10-20% qualité au low-bitrate. ~4 j (incl retrain).',
+    src: 'Ultra-Low Bitrate Perceptual Image Compression with Shallow Encoder, 2025',
+    srcUrl: 'https://arxiv.org/html/2512.12229v1' },
+  { id: 'fsq-tuning', cat: 'priority', title: 'FSQ tuning — explorer dim/level tradeoff',
+    desc: 'Actuel 4×4 (256 codes). Tester 6×3 (729), 3×8 (512), 5×3 (243). Codebook util ~100% sans collapse.',
+    src: 'Mentzer et al. ICLR 2024 "Finite Scalar Quantization"',
+    srcUrl: 'https://arxiv.org/abs/2309.15505' },
+
+  // === Ambitious ===
+  { id: 'glc-prior', cat: 'ambitious', title: 'Generative Latent Coding — pretrain sur SD-VAE prior',
+    desc: 'Pre-train decoder pour mimer latent space SD-VAE (84M params). Hériter du prior visuel énorme. ~1 sem.',
+    src: 'GLC, CVPR 2024',
+    srcUrl: 'https://openaccess.thecvf.com/content/CVPR2024/papers/Jia_Generative_Latent_Coding_for_Ultra-Low_Bitrate_Image_Compression_CVPR_2024_paper.pdf' },
+  { id: 'aeic-diffusion', cat: 'ambitious', title: 'AEIC / DLF — one-step diffusion decoder',
+    desc: 'Remplacer decoder feed-forward par 1 step diffusion conditionné. -53% DISTS au low-bitrate vs SOTA. ~2 sem.',
+    src: 'DLF: Dual-generative Latent Fusion, 2024',
+    srcUrl: 'https://arxiv.org/html/2503.01428v2' },
+  { id: 'discrete-diffusion', cat: 'ambitious', title: 'Discrete diffusion sur indices palette',
+    desc: 'Output catégoriel 256 classes → denoising discret au lieu d\'argmax. Mieux pour pixels ambiguus. Trade-off : 5-20 steps inférence.',
+    src: 'Palette: Image-to-Image Diffusion Models',
+    srcUrl: 'https://iterative-refinement.github.io/palette/' },
+
+  // === Runtime (no retrain) ===
+  { id: 'ort-trimmed', cat: 'runtime', title: '.ort format + trimmed ORT runtime custom',
+    desc: 'FlatBuffers + ORT rebuild avec ops minimales (~10/150). Runtime 12.4 MB → ~3 MB. Cold start 5 s → 1.5 s pour TOUS les browsers. 0% perte qualité. ~2 j.',
+    src: 'ONNX Runtime — Build for web', srcUrl: 'https://onnxruntime.ai/docs/build/web.html' },
+  { id: 'int8-qat', cat: 'runtime', title: 'INT8 QAT pour poids (mixed precision)',
+    desc: 'Étendre QAT aux poids Conv2d, garder palette_head FP32. Modèle 4 MB → ~1 MB. WASM 2-3× speedup. ~0.5% perte avec QAT.',
+    src: 'Chen et al. ICCV 2025 "KD for Learned Image Compression"',
+    srcUrl: 'https://openaccess.thecvf.com/content/ICCV2025/papers/Chen_Knowledge_Distillation_for_Learned_Image_Compression_ICCV_2025_paper.pdf' },
+  { id: 'idb-cache', cat: 'runtime', title: 'IndexedDB cache pour indices décodés',
+    desc: 'Keyé par hash. 1ère vue lente, ensuite instant. Marche tous browsers Firefox inclus. 0% perte qualité. ~30 lignes TS.',
+    src: 'idée pragmatique' },
+  { id: 'distillation', cat: 'runtime', title: 'Knowledge distillation — student model 500K params',
+    desc: 'Student trained pour mimer teacher (ep 470). 2× speedup partout, modèle 2 MB. ~2% perte. ~3 j retrain.',
+    src: 'Chen et al. ICCV 2025',
+    srcUrl: 'https://openaccess.thecvf.com/content/ICCV2025/papers/Chen_Knowledge_Distillation_for_Learned_Image_Compression_ICCV_2025_paper.pdf' },
+  { id: 'webnn', cat: 'runtime', title: 'WebNN provider (NPU)',
+    desc: 'Ajouter "webnn" au provider chain. Bénéficie : Windows AI PC, macOS Apple NE, Android NPU. Aucun gain Firefox stable ou PC sans NPU. 30 min.',
+    src: 'ONNX Runtime — WebNN EP', srcUrl: 'https://onnxruntime.ai/docs/tutorials/web/ep-webnn.html' },
+]
+
+const CAT_META = {
+  done:      { label: '✓ Déjà testé / en place',     color: 'var(--c-accent)' },
+  priority:  { label: '🎯 Prioritaire (haut ROI)',    color: 'var(--c-warning)' },
+  ambitious: { label: '🔬 Ambitieux (gros effort)',   color: '#c678dd' },
+  runtime:   { label: '⚙️ Runtime (sans retrain)',    color: 'var(--c-accent)' },
+}
+
+const RESEARCH_STORAGE_KEY = 'research-checklist-v1'
+
+function loadResearchState() {
+  try {
+    return JSON.parse(localStorage.getItem(RESEARCH_STORAGE_KEY) || '{}')
+  } catch { return {} }
+}
+
+function saveResearchState(state) {
+  localStorage.setItem(RESEARCH_STORAGE_KEY, JSON.stringify(state))
+}
+
+function renderResearchChecklist() {
+  const state = loadResearchState()
+  const list = document.getElementById('researchList')
+  list.innerHTML = ''
+
+  // Group by category
+  const grouped = {}
+  RESEARCH_ITEMS.forEach(it => {
+    if (!grouped[it.cat]) grouped[it.cat] = []
+    grouped[it.cat].push(it)
+  })
+
+  for (const cat of ['done', 'priority', 'runtime', 'ambitious']) {
+    const items = grouped[cat] || []
+    if (items.length === 0) continue
+    const catDiv = document.createElement('div')
+    catDiv.style.cssText = 'margin-bottom:14px;'
+    catDiv.innerHTML = `<div style="color:${CAT_META[cat].color};font-weight:bold;font-size:0.95em;margin-bottom:6px;">${CAT_META[cat].label}</div>`
+    const ul = document.createElement('ul')
+    ul.style.cssText = 'list-style:none;padding-left:0;margin:0;'
+    items.forEach(it => {
+      // Done items: check by default; user can uncheck if they want to re-test
+      const defaultChecked = (cat === 'done')
+      const checked = state[it.id] !== undefined ? state[it.id] : defaultChecked
+      const li = document.createElement('li')
+      li.style.cssText = 'padding:6px 0;border-bottom:1px dashed var(--c-border);'
+      const srcLink = it.srcUrl
+        ? `<a href="${it.srcUrl}" target="_blank" rel="noopener" style="color:var(--c-accent);text-decoration:none;">${it.src} ↗</a>`
+        : `<span style="color:var(--c-text-muted);">${it.src}</span>`
+      li.innerHTML = `
+        <label style="display:flex;align-items:flex-start;gap:8px;cursor:pointer;">
+          <input type="checkbox" data-id="${it.id}" ${checked ? 'checked' : ''} style="margin-top:3px;flex-shrink:0;">
+          <div style="flex:1;">
+            <div style="color:var(--c-text-dim);font-weight:500;">${it.title}</div>
+            <div style="color:var(--c-text-muted);font-size:0.92em;margin:2px 0 3px 0;">${it.desc}</div>
+            <div style="font-size:0.85em;">${srcLink}</div>
+          </div>
+        </label>
+      `
+      ul.appendChild(li)
+    })
+    catDiv.appendChild(ul)
+    list.appendChild(catDiv)
+  }
+
+  // Hook up checkbox persistence
+  list.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const s = loadResearchState()
+      s[cb.dataset.id] = cb.checked
+      saveResearchState(s)
+    })
+  })
+}
+
+window.resetResearchChecklist = function() {
+  if (!confirm('Reset toutes les cases du checklist ?')) return
+  localStorage.removeItem(RESEARCH_STORAGE_KEY)
+  renderResearchChecklist()
+}
+
+// Render after DOM ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', renderResearchChecklist)
+} else {
+  renderResearchChecklist()
+}
+</script>
+
+<script>
+// Mark page-load reference so we can build a wall-clock timing breakdown.
+window.__T0 = performance.now()
+window.__SCRIPT_START = window.__T0  // when this inline script first ran
+
+// Register a Service Worker that caches the heavy ML assets (decoder.onnx,
+// encoder.onnx, ort-wasm-*.wasm/mjs, ort.min.js from CDN). 1st visit pays the
+// full ~16 MB download; subsequent visits hit the local cache instantly.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js')
+    .then(reg => {
+      window.__SW_STATE = reg.active ? 'active (cached)' : (reg.installing ? 'installing (1st visit)' : 'waiting')
+    })
+    .catch(e => { window.__SW_STATE = 'failed: ' + e.message })
+} else {
+  window.__SW_STATE = 'unsupported'
+}
+</script>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/ort.min.js"></script>
+<script>
+const LATENT_C = 4, LATENT_H = 32, LATENT_W = 32;
+const BITS = 2;
+const DECODE_W = 256, DECODE_H = 256;
+const DISPLAY_SIZES = [64, 128, 256, 512];
+
+let DATA = null;
+let session = null;
+let PALETTE = null; // [[r,g,b], ...] 256 entries
+let UNIFORM_PALETTE_RGB = null; // initial default — kept around for reset
+let ALL_PALETTES = {}; // name → [[r,g,b], ...] (256 each)
+
+// ============================================================
+// ONNX
+// ============================================================
+async function initOnnx() {
+  const t0 = performance.now();
+  ort.env.wasm.numThreads = 1;
+  // Try WebGPU first (Chrome/Edge/Safari + Firefox-with-flags).
+  // We capture WebGPU validation errors via device.onuncapturederror because
+  // they don't propagate as JS exceptions — if any fire during init, we drop
+  // the GPU session and use WASM.
+  let provider = 'wasm';
+  try {
+    if (navigator.gpu && await navigator.gpu.requestAdapter()) {
+      const adapter = await navigator.gpu.requestAdapter();
+      const device = await adapter.requestDevice();
+      let webgpuValid = true;
+      device.addEventListener('uncapturederror', e => {
+        console.warn('WebGPU uncaptured error:', e.error?.message || e);
+        webgpuValid = false;
+      });
+      // Hand our pre-created device to ORT so we can detect failures
+      ort.env.webgpu = ort.env.webgpu || {};
+      ort.env.webgpu.adapter = adapter;
+      try {
+        const tryGpu = await ort.InferenceSession.create('decoder.onnx', {
+          executionProviders: ['webgpu'],
+          // Keep `logits` on the GPU as a GPUBuffer — argmax compute shader
+          // reads it directly, no CPU readback. Skipped on WASM EP fallback.
+          preferredOutputLocation: { logits: 'gpu-buffer' },
+        });
+        // Run a smoke test on dummy latent — exercises the same shader path
+        // the gallery would hit.
+        const dummy = new ort.Tensor('float32',
+          new Float32Array(LATENT_C*LATENT_H*LATENT_W),
+          [1, LATENT_C, LATENT_H, LATENT_W]);
+        await tryGpu.run({ latent: dummy });
+        // Wait one tick — uncaptured errors fire async after queue submission
+        await new Promise(r => setTimeout(r, 50));
+        if (webgpuValid) {
+          session = tryGpu;
+          provider = 'webgpu';
+        } else {
+          console.warn('WebGPU validation errors detected — falling back to WASM');
+          tryGpu.release?.();
+        }
+      } catch (e) {
+        console.warn('WebGPU EP threw:', e.message);
+      }
+    }
+    if (!session) {
+      session = await ort.InferenceSession.create('decoder.onnx', {
+        executionProviders: ['wasm'],
+      });
+    }
+    window.__ORT_PROVIDER = provider;
+    const dt = (performance.now() - t0).toFixed(0);
+    window.__JIT_DECODER_MS = parseFloat(dt);
+    document.getElementById('onnxStatus').textContent = 'ready';
+    document.getElementById('onnxStatus').style.color = 'var(--c-accent)';
+    document.getElementById('initTime').textContent = dt + 'ms';
+    return true;
+  } catch(e) {
+    document.getElementById('onnxStatus').textContent = 'FAILED: ' + e.message;
+    document.getElementById('onnxStatus').style.color = 'var(--c-error)';
+    console.error(e);
+    return false;
+  }
+}
+
+function unpackLatent(b64) {
+  const raw = atob(b64);
+  const bits = [];
+  for (let i = 0; i < raw.length; i++) {
+    const byte = raw.charCodeAt(i);
+    for (let b = 7; b >= 0; b--) bits.push((byte >> b) & 1);
+  }
+  const total = LATENT_C * LATENT_H * LATENT_W;
+  const vals = new Float32Array(total);
+  for (let i = 0; i < total; i++) {
+    let v = 0;
+    for (let j = 0; j < BITS; j++) v = (v << 1) | bits[i * BITS + j];
+    // Match Python Quantize2BitSTE: idx*2 - 3 → exact {-3, -1, +1, +3}
+    // (NOT (v/3 - 0.5)*6 — that introduces float32 rounding ε that amplifies
+    // through the decoder's conv stack and changes argmax on edge pixels.)
+    vals[i] = v * 2 - 3;
+  }
+  return vals;
+}
+
+async function decodeLatent(b64) {
+  const latent = unpackLatent(b64);
+  const tensor = new ort.Tensor('float32', latent, [1, LATENT_C, LATENT_H, LATENT_W]);
+  const t0 = performance.now();
+  const results = await session.run({ latent: tensor });
+  const dt = performance.now() - t0;
+  // Output: logits (1, 256, 256, 256) — argmax on dim 1 → palette index per pixel
+  const logits = results.logits.data; // Float32Array, length 256*256*256
+  return { logits, dt };
+}
+
+/**
+ * GPU argmax. Accepts either:
+ *   - a Float32Array (CPU-side logits) — uploads, computes, downloads.
+ *   - { gpuBuffer, byteOffset, byteLength } — uses ORT's existing GPUBuffer
+ *     directly (zero-copy, ~30 ms saved per card). Path taken when ORT was
+ *     created with preferredOutputLocation:{logits:'gpu-buffer'} above.
+ *
+ * Returns a Uint8Array of palette indices (length = 256*256).
+ */
+async function argmaxGPU(logits, opts = {}) {
+  if (!GPU || !GPU.argmaxPipeline) return null;
+  const { device, argmaxPipeline } = GPU;
+  const PIXELS = DECODE_H * DECODE_W;
+  const PACKED_WORDS = PIXELS / 4;
+  const LOGITS_BYTES_PER_SLICE = 256 * PIXELS * 4;  // 64 MB per batch slice
+
+  // Resolve the logits buffer — either upload from CPU or reuse the GPU one.
+  let logitsBuf, ownedLogitsBuf = false, byteOffset = 0;
+  if (opts.gpuBuffer) {
+    logitsBuf = opts.gpuBuffer;
+    byteOffset = opts.byteOffset || 0;
+  } else {
+    logitsBuf = device.createBuffer({
+      size: logits.byteLength,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(logitsBuf, 0, logits.buffer, logits.byteOffset, logits.byteLength);
+    ownedLogitsBuf = true;
+  }
+
+  const packedBuf = device.createBuffer({
+    size: PACKED_WORDS * 4,
+    usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+  });
+  device.queue.writeBuffer(packedBuf, 0, new Uint32Array(PACKED_WORDS).buffer);
+
+  const bindGroup = device.createBindGroup({
+    layout: argmaxPipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: logitsBuf, offset: byteOffset, size: LOGITS_BYTES_PER_SLICE } },
+      { binding: 1, resource: { buffer: packedBuf } },
+    ],
+  });
+
+  const stagingBuf = device.createBuffer({
+    size: PACKED_WORDS * 4,
+    usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+  });
+
+  const enc = device.createCommandEncoder();
+  const pass = enc.beginComputePass();
+  pass.setPipeline(argmaxPipeline);
+  pass.setBindGroup(0, bindGroup);
+  pass.dispatchWorkgroups(16, 16);
+  pass.end();
+  enc.copyBufferToBuffer(packedBuf, 0, stagingBuf, 0, PACKED_WORDS * 4);
+  device.queue.submit([enc.finish()]);
+
+  await stagingBuf.mapAsync(GPUMapMode.READ);
+  const packed = new Uint32Array(stagingBuf.getMappedRange().slice(0));
+  stagingBuf.unmap();
+  const indices = new Uint8Array(packed.buffer, 0, PIXELS);
+
+  if (ownedLogitsBuf) logitsBuf.destroy();
+  packedBuf.destroy();
+  stagingBuf.destroy();
+  return indices;
+}
+
+function logitsToIndices(logits) {
+  // logits shape: (1, 256_colors, 256_h, 256_w) flattened
+  // For each pixel (h*w = 65536), find argmax across 256 color channels
+  const pixels = DECODE_H * DECODE_W;
+  const numColors = 256;
+  const indices = new Uint8Array(pixels);
+  for (let p = 0; p < pixels; p++) {
+    let bestVal = -Infinity;
+    let bestIdx = 0;
+    for (let c = 0; c < numColors; c++) {
+      const val = logits[c * pixels + p];
+      if (val > bestVal) {
+        bestVal = val;
+        bestIdx = c;
+      }
+    }
+    indices[p] = bestIdx;
+  }
+  return indices;
+}
+
+// ============================================================
+// Rendering — WebGPU palette path (with canvas2D fallback)
+// ============================================================
+// indices stay 8-bit on GPU all the way to the screen; palette swap = upload
+// 1 KB texture, no JS pixel loop. Falls back to ImageData path on Firefox or
+// if WebGPU init fails.
+
+const SHADER_WGSL = `
+struct VOut {
+  @builtin(position) position: vec4<f32>,
+  @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs(@builtin(vertex_index) vi: u32) -> VOut {
+  var pos = array<vec2<f32>, 6>(
+    vec2(-1.0, -1.0), vec2( 1.0, -1.0), vec2(-1.0,  1.0),
+    vec2(-1.0,  1.0), vec2( 1.0, -1.0), vec2( 1.0,  1.0),
+  );
+  var uv = array<vec2<f32>, 6>(
+    vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(0.0, 0.0),
+    vec2(0.0, 0.0), vec2(1.0, 1.0), vec2(1.0, 0.0),
+  );
+  var o: VOut;
+  o.position = vec4<f32>(pos[vi], 0.0, 1.0);
+  o.uv = uv[vi];
+  return o;
+}
+
+@group(0) @binding(0) var idxTex: texture_2d<u32>;
+@group(0) @binding(1) var palTex: texture_2d<f32>;
+
+@fragment
+fn fs(in: VOut) -> @location(0) vec4<f32> {
+  let dim = vec2<f32>(textureDimensions(idxTex));
+  let coord = vec2<i32>(in.uv * dim);
+  let idx = textureLoad(idxTex, coord, 0).r;
+  return textureLoad(palTex, vec2<i32>(i32(idx), 0), 0);
+}
+`;
+
+let GPU = null;             // { device, pipeline, format, paletteTex, argmax }
+let GPU_INIT = null;        // promise (deduped)
+let GPU_PALETTE_DIRTY = true;
+const __gpuPerCanvas = new WeakMap(); // canvas → { context, idxTex, bindGroup, size }
+
+// Compute shader: argmax over the (256_classes × 256 × 256) logits buffer.
+// Each thread handles one pixel, scans all 256 classes, packs the best index
+// into a u32 storage buffer (4 indices per word). The packed buffer is then
+// copied into the R8UI indices texture used by the render shader — no CPU
+// readback, no JS argmax loop on 16M values.
+const ARGMAX_WGSL = `
+@group(0) @binding(0) var<storage, read> logits: array<f32>;
+@group(0) @binding(1) var<storage, read_write> packed_indices: array<atomic<u32>>;
+
+@compute @workgroup_size(16, 16)
+fn argmax(@builtin(global_invocation_id) gid: vec3<u32>) {
+  if (gid.x >= 256u || gid.y >= 256u) { return; }
+  let p = gid.y * 256u + gid.x;
+  var best: f32 = logits[p];
+  var best_idx: u32 = 0u;
+  for (var c: u32 = 1u; c < 256u; c = c + 1u) {
+    let v = logits[c * 65536u + p];
+    if (v > best) { best = v; best_idx = c; }
+  }
+  let word_idx = p / 4u;
+  let byte_pos = (p & 3u) * 8u;
+  atomicOr(&packed_indices[word_idx], best_idx << byte_pos);
+}
+`;
+
+async function initGPU() {
+  if (GPU_INIT) return GPU_INIT;
+  GPU_INIT = (async () => {
+    if (!navigator.gpu) {
+      window.__GPU_ERROR = 'navigator.gpu unavailable (browser does not support WebGPU)';
+      window.__GPU_RENDERER = 'unavailable';
+      return null;
+    }
+    try {
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) {
+        window.__GPU_ERROR = 'requestAdapter() returned null (no compatible GPU)';
+        window.__GPU_RENDERER = 'unavailable';
+        return null;
+      }
+      const device = await adapter.requestDevice();
+      const format = navigator.gpu.getPreferredCanvasFormat();
+      const shader = device.createShaderModule({ code: SHADER_WGSL });
+      const pipeline = device.createRenderPipeline({
+        layout: 'auto',
+        vertex: { module: shader, entryPoint: 'vs' },
+        fragment: { module: shader, entryPoint: 'fs', targets: [{ format }] },
+        primitive: { topology: 'triangle-list' },
+      });
+      // Compute pipeline for argmax (logits buffer → packed indices buffer).
+      const argmaxModule = device.createShaderModule({ code: ARGMAX_WGSL });
+      const argmaxPipeline = device.createComputePipeline({
+        layout: 'auto',
+        compute: { module: argmaxModule, entryPoint: 'argmax' },
+      });
+      // Share our device with onnxruntime-web so its WebGPU EP outputs land
+      // on the same GPUDevice — required for zero-copy logits → compute argmax.
+      try { ort.env.webgpu.device = device; } catch {}
+      // 256×1 RGBA8 palette texture — ONE shared instance, reused across all
+      // canvases. Changing the palette = writeTexture this once, redraw all.
+      const paletteTex = device.createTexture({
+        size: [256, 1],
+        format: 'rgba8unorm',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      });
+      GPU = { device, pipeline, format, paletteTex, argmaxPipeline };
+      window.__GPU_RENDERER = 'webgpu';
+      return GPU;
+    } catch (e) {
+      window.__GPU_ERROR = e.message;
+      window.__GPU_RENDERER = 'failed';
+      console.error('WebGPU init failed:', e);
+      return null;
+    }
+  })();
+  return GPU_INIT;
+}
+
+function uploadPaletteToGPU() {
+  if (!GPU || !PALETTE) return;
+  const data = new Uint8Array(256 * 4);
+  for (let i = 0; i < 256; i++) {
+    const c = PALETTE[i] || [0, 0, 0];
+    data[i*4]   = c[0];
+    data[i*4+1] = c[1];
+    data[i*4+2] = c[2];
+    data[i*4+3] = 255;
+  }
+  GPU.device.queue.writeTexture(
+    { texture: GPU.paletteTex },
+    data,
+    { bytesPerRow: 256 * 4, rowsPerImage: 1 },
+    [256, 1, 1]
+  );
+  GPU_PALETTE_DIRTY = false;
+}
+
+function renderIndicesGPU(canvas, indices, w, h) {
+  if (!GPU) return false;
+  if (GPU_PALETTE_DIRTY) uploadPaletteToGPU();
+
+  let st = __gpuPerCanvas.get(canvas);
+  if (!st || st.size !== w * h) {
+    if (canvas.width !== w) canvas.width = w;
+    if (canvas.height !== h) canvas.height = h;
+    let context = st?.context;
+    if (!context) {
+      try {
+        context = canvas.getContext('webgpu');
+        if (!context) return false;
+        context.configure({ device: GPU.device, format: GPU.format, alphaMode: 'premultiplied' });
+      } catch (e) {
+        // canvas already has a 2D context attached from a prior render — fall back
+        return false;
+      }
+    }
+    const idxTex = GPU.device.createTexture({
+      size: [w, h],
+      format: 'r8uint',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    const bindGroup = GPU.device.createBindGroup({
+      layout: GPU.pipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: idxTex.createView() },
+        { binding: 1, resource: GPU.paletteTex.createView() },
+      ],
+    });
+    st = { context, idxTex, bindGroup, size: w * h };
+    __gpuPerCanvas.set(canvas, st);
+  }
+
+  GPU.device.queue.writeTexture(
+    { texture: st.idxTex },
+    indices,
+    { bytesPerRow: w, rowsPerImage: h },
+    [w, h, 1]
+  );
+
+  const enc = GPU.device.createCommandEncoder();
+  const view = st.context.getCurrentTexture().createView();
+  const pass = enc.beginRenderPass({
+    colorAttachments: [{
+      view, loadOp: 'clear', storeOp: 'store',
+      clearValue: { r: 0, g: 0, b: 0, a: 1 },
+    }],
+  });
+  pass.setPipeline(GPU.pipeline);
+  pass.setBindGroup(0, st.bindGroup);
+  pass.draw(6);
+  pass.end();
+  GPU.device.queue.submit([enc.finish()]);
+  return true;
+}
+
+// ============================================================
+// WebGL2 renderer — universal fallback (Firefox stable Linux, etc)
+// ============================================================
+// Same approach as WebGPU: R8UI indices texture + RGBA8 palette texture +
+// fragment shader. Each canvas gets its own GL2 context and resources.
+// Shader compiles once per canvas, then palette swap = upload 1 KB + redraw.
+
+const GL2_VS = `#version 300 es
+in vec2 aPos;
+out vec2 vUV;
+void main() {
+  vec2 uv = aPos * 0.5 + 0.5;
+  uv.y = 1.0 - uv.y;  // flip to match canvas top-left convention
+  vUV = uv;
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}`;
+
+const GL2_FS = `#version 300 es
+precision highp float;
+precision highp int;
+precision highp usampler2D;
+
+uniform usampler2D uIndices;
+uniform sampler2D uPalette;
+
+in vec2 vUV;
+out vec4 outColor;
+
+void main() {
+  ivec2 dim = textureSize(uIndices, 0);
+  ivec2 coord = ivec2(vUV * vec2(dim));
+  uint idx = texelFetch(uIndices, coord, 0).r;
+  outColor = texelFetch(uPalette, ivec2(int(idx), 0), 0);
+}`;
+
+const __gl2PerCanvas = new WeakMap();
+let GL2_AVAILABLE = null; // probed once
+
+function probeGL2Available() {
+  if (GL2_AVAILABLE !== null) return GL2_AVAILABLE;
+  const probe = document.createElement('canvas');
+  GL2_AVAILABLE = !!probe.getContext('webgl2');
+  return GL2_AVAILABLE;
+}
+
+function _gl2CompileShader(gl, type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(s);
+    gl.deleteShader(s);
+    throw new Error('GL2 shader compile failed: ' + log);
+  }
+  return s;
+}
+
+function _gl2InitOnCanvas(canvas) {
+  const gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false });
+  if (!gl) return null;
+
+  const vs = _gl2CompileShader(gl, gl.VERTEX_SHADER, GL2_VS);
+  const fs = _gl2CompileShader(gl, gl.FRAGMENT_SHADER, GL2_FS);
+  const program = gl.createProgram();
+  gl.attachShader(program, vs);
+  gl.attachShader(program, fs);
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    throw new Error('GL2 link failed: ' + gl.getProgramInfoLog(program));
+  }
+
+  const aPosLoc = gl.getAttribLocation(program, 'aPos');
+  const uIndicesLoc = gl.getUniformLocation(program, 'uIndices');
+  const uPaletteLoc = gl.getUniformLocation(program, 'uPalette');
+
+  const vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+    -1, -1,   1, -1,  -1,  1,
+    -1,  1,   1, -1,   1,  1,
+  ]), gl.STATIC_DRAW);
+
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  gl.enableVertexAttribArray(aPosLoc);
+  gl.vertexAttribPointer(aPosLoc, 2, gl.FLOAT, false, 0, 0);
+  gl.bindVertexArray(null);
+
+  // Palette texture: 256×1 RGBA8 — pre-allocated, updated each frame
+  const paletteTex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, paletteTex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+
+  // Indices texture: R8UI, allocated lazily on first upload
+  const indicesTex = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, indicesTex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+  return {
+    gl, program, vao, paletteTex, indicesTex,
+    uIndicesLoc, uPaletteLoc, indicesW: 0, indicesH: 0,
+  };
+}
+
+function _gl2UploadPalette(st) {
+  if (!PALETTE) return;
+  const data = new Uint8Array(256 * 4);
+  for (let i = 0; i < 256; i++) {
+    const c = PALETTE[i] || [0, 0, 0];
+    data[i*4]   = c[0];
+    data[i*4+1] = c[1];
+    data[i*4+2] = c[2];
+    data[i*4+3] = 255;
+  }
+  const { gl } = st;
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, st.paletteTex);
+  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 256, 1, gl.RGBA, gl.UNSIGNED_BYTE, data);
+}
+
+function renderIndicesGL2(canvas, indices, w, h) {
+  let st = __gl2PerCanvas.get(canvas);
+  if (!st) {
+    try {
+      st = _gl2InitOnCanvas(canvas);
+    } catch (e) {
+      console.error('GL2 init failed for canvas:', e.message);
+      return false;
+    }
+    if (!st) return false;
+    __gl2PerCanvas.set(canvas, st);
+  }
+  const { gl } = st;
+
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, st.indicesTex);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  if (st.indicesW !== w || st.indicesH !== h) {
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8UI, w, h, 0, gl.RED_INTEGER, gl.UNSIGNED_BYTE, indices);
+    st.indicesW = w; st.indicesH = h;
+  } else {
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RED_INTEGER, gl.UNSIGNED_BYTE, indices);
+  }
+
+  _gl2UploadPalette(st);
+
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.useProgram(st.program);
+  gl.uniform1i(st.uIndicesLoc, 0);
+  gl.uniform1i(st.uPaletteLoc, 1);
+  gl.bindVertexArray(st.vao);
+  gl.drawArrays(gl.TRIANGLES, 0, 6);
+  gl.bindVertexArray(null);
+  return true;
+}
+
+// ============================================================
+// Site theming — map UI roles to palette indices via luminance + saturation
+// ============================================================
+// Picks "best fit" palette colors for each CSS variable, so the SAME palette
+// drives the canvases AND the page chrome (bg, cards, text, accents).
+//
+// Strategy: luminance percentile for neutrals (bg/text), saturation+hue
+// channel matching for semantic colors (success=green, info=blue, etc).
+// Works on uniform palette and Lospec palettes (Hungarian-reordered).
+
+// ============================================================
+// Native helper detection — same-origin /helper/*
+// ============================================================
+// If the page is served by helper.py (the unified server on :8080), the
+// /helper/* endpoints are reachable from any client (mobile, LAN, private
+// window) without CORS. If served by a plain static server, fetches just 404
+// → graceful "helper offline" UI.
+
+const HELPER_URL = '/helper';
+let __helperOk = false;
+
+async function detectHelper() {
+  try {
+    const r = await fetch(HELPER_URL + '/status', {
+      signal: AbortSignal.timeout(500),
+    });
+    if (!r.ok) return false;
+    const data = await r.json();
+    return !!data.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function refreshUsbPanel() {
+  if (!__helperOk) return;
+  try {
+    const r = await fetch(HELPER_URL + '/lsusb');
+    const data = await r.json();
+    const list = document.getElementById('helperUsbList');
+    const count = document.getElementById('helperUsbCount');
+    if (data.devices) {
+      list.innerHTML = data.devices.map(d =>
+        `<div><span style="color:var(--c-accent);">${d.bus}:${d.device}</span> <span style="color:var(--c-warning);">${d.id}</span> ${d.name.replace(/</g, '&lt;')}</div>`
+      ).join('') || '<i>no devices</i>';
+      count.textContent = data.count + ' device' + (data.count === 1 ? '' : 's');
+    } else if (data.error) {
+      list.textContent = 'error: ' + data.error;
+    }
+  } catch (e) {
+    document.getElementById('helperUsbList').textContent = 'fetch error: ' + e.message;
+  }
+}
+
+window.helperEnableWebGPU = async function() {
+  const out = document.getElementById('helperWebGPUResult');
+  out.textContent = '...';
+  try {
+    const r = await fetch(HELPER_URL + '/enable-webgpu', { method: 'POST' });
+    const data = await r.json();
+    if (data.ok) {
+      out.innerHTML = `wrote ${data.wrote} pref(s) to <span style="color:var(--c-accent);">${data.user_js}</span><br>${data.message}`;
+      out.style.color = 'var(--c-success)';
+    } else {
+      out.textContent = 'error: ' + (data.error || 'unknown');
+      out.style.color = 'var(--c-error)';
+    }
+  } catch (e) {
+    out.textContent = 'fetch error: ' + e.message;
+    out.style.color = 'var(--c-error)';
+  }
+};
+
+window.helperResetWebGPU = async function() {
+  const out = document.getElementById('helperWebGPUResult');
+  out.textContent = '...';
+  try {
+    const r = await fetch(HELPER_URL + '/reset-webgpu', { method: 'POST' });
+    const data = await r.json();
+    if (data.ok) {
+      out.innerHTML = `WebGPU prefs reset (${data.action}) on <span style="color:var(--c-accent);">${data.user_js}</span><br>${data.message}`;
+      out.style.color = 'var(--c-warning)';
+    } else {
+      out.textContent = 'error: ' + (data.error || 'unknown');
+      out.style.color = 'var(--c-error)';
+    }
+  } catch (e) {
+    out.textContent = 'fetch error: ' + e.message;
+    out.style.color = 'var(--c-error)';
+  }
+};
+
+// ============================================================
+// Scale reader — polls /scale, updates the live readout
+// ============================================================
+// Cheap CH340-based scales emit ASCII over a virtual serial port at 9600 baud
+// (NOT as HID keyboard despite what the box says). The helper opens the port
+// in a background thread and caches the latest parsed reading; we just poll.
+
+async function pollScale() {
+  try {
+    const r = await fetch(HELPER_URL + '/scale');
+    const s = await r.json();
+    const conn = document.getElementById('scaleConn');
+    const out = document.getElementById('scaleReadout');
+    const meta = document.getElementById('scaleMeta');
+    if (s.connected) {
+      conn.textContent = '🟢 connected';
+      conn.style.color = 'var(--c-success)';
+    } else {
+      conn.textContent = '⚪ ' + (s.error ? s.error : 'no signal');
+      conn.style.color = 'var(--c-warning)';
+    }
+    if (s.value !== null && s.value !== undefined) {
+      out.textContent = (s.value > 0 && s.sign === '+' ? '+' : '') + s.value.toFixed(2) + ' ' + s.unit;
+      out.style.color = s.status === 'WTST' ? 'var(--c-success)' : 'var(--c-warning)';
+      meta.textContent = `${s.status || '—'} · ${s.age_ms}ms ago · raw: "${s.raw}"`;
+    } else {
+      out.textContent = '—';
+      meta.textContent = s.raw ? `raw: "${s.raw}"` : '—';
+    }
+  } catch (e) {
+    document.getElementById('scaleConn').textContent = '⚪ helper offline';
+  }
+}
+
+function setupScaleReader() {
+  pollScale();
+  setInterval(pollScale, 250);  // 4 Hz, plenty for a scale that updates ~5 Hz
+}
+
+async function setupHelper() {
+  __helperOk = await detectHelper();
+  const stat = document.getElementById('helperStatus');
+  const title = document.getElementById('helperPanelTitle');
+  const hint = document.getElementById('helperPanelHint');
+  const panel = document.getElementById('helperPanel');
+  // Always show the panel — even offline, so user sees what's possible.
+  // Buttons stay enabled but their handlers print the "helper unreachable"
+  // error if clicked while offline.
+  if (__helperOk) {
+    stat.textContent = '🟢 connected';
+    stat.style.color = 'var(--c-success)';
+    title.textContent = '🟢 Native helper connected (localhost:9999)';
+    title.style.color = 'var(--c-success)';
+    panel.style.borderColor = 'var(--c-success)';
+    hint.style.display = 'none';
+    refreshUsbPanel();
+    setInterval(refreshUsbPanel, 5000);
+    setupScaleReader();
+    if (window.__ACTIVE_RENDERER === 'webgpu') {
+      localStorage.setItem(WG_POPUP_KEY, '1');
+    }
+  } else {
+    stat.textContent = '⚪ offline';
+    stat.style.color = 'var(--c-text-muted)';
+    stat.title = 'Run `python3 helper.py` from output/demo/ to enable 1-click WebGPU + USB panel';
+    title.textContent = '⚪ Native helper offline (localhost:9999 unreachable)';
+    title.style.color = 'var(--c-warning)';
+    panel.style.borderColor = 'var(--c-warning)';
+    hint.style.display = 'block';
+    document.getElementById('helperUsbList').textContent = 'helper offline — no USB inventory available';
+    document.getElementById('helperUsbCount').textContent = '—';
+    const scaleC = document.getElementById('scaleConn');
+    if (scaleC) scaleC.textContent = '⚪ helper offline';
+    const scaleR = document.getElementById('scaleReadout');
+    if (scaleR) scaleR.textContent = '—';
+  }
+}
+
+// (Old WebGPU activation popup removed — superseded by the localhost:9999
+//  native helper which provides 1-click WebGPU enable + USB device readout.)
+const WG_POPUP_KEY = 'wg-popup-dismissed-v1';  // kept for legacy localStorage cleanup
+function maybeShowWebGPUPopup() { /* no-op now */ }
+
+function applyPaletteTheme() {
+  if (!PALETTE || PALETTE.length < 16) return;
+
+  const stats = PALETTE.map((c, i) => {
+    const r = c[0], g = c[1], b = c[2];
+    const lum = 0.299*r + 0.587*g + 0.114*b;
+    const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+    const sat = mx === 0 ? 0 : (mx - mn) / mx;
+    return { i, r, g, b, lum, sat };
+  });
+
+  const byLum = [...stats].sort((a, b) => a.lum - b.lum);
+  const N = byLum.length;
+  const at = p => byLum[Math.max(0, Math.min(N - 1, Math.floor(p * N)))];
+
+  const bg        = at(0.04);   // very dark — body background
+  const canvasBg  = at(0.00);   // darkest available
+  const panel     = at(0.02);   // status bar, hash section
+  const card      = at(0.10);   // gallery cards
+  const inputBg   = at(0.07);   // textareas
+  const border    = at(0.18);   // borders
+  const textMuted = at(0.45);   // muted labels
+  const textDim   = at(0.72);   // dim text
+  const text      = at(0.96);   // primary text (high contrast on bg)
+
+  // Pick accent: most saturated in mid-light range
+  const pickHued = (filter, fallbackPct = 0.6) => {
+    const cands = stats.filter(filter);
+    cands.sort((a, b) => b.sat - a.sat);
+    return cands[0] || at(fallbackPct);
+  };
+  const accent  = pickHued(s => s.lum > 80 && s.lum < 200);
+  const warning = pickHued(s => s.r > Math.max(s.g, s.b) && s.g > s.b && s.lum > 100 && s.lum < 220);
+  const success = pickHued(s => s.g > s.r && s.g > s.b && s.lum > 60 && s.lum < 200);
+  const info    = pickHued(s => s.b > s.r && s.b > s.g && s.lum > 60 && s.lum < 200);
+  const error   = pickHued(s => s.r > s.g && s.r > s.b && s.r > 1.4 * Math.max(s.g, s.b) && s.lum > 70 && s.lum < 220);
+
+  const root = document.documentElement;
+  const rgb = c => `rgb(${c.r},${c.g},${c.b})`;
+  root.style.setProperty('--c-bg',         rgb(bg));
+  root.style.setProperty('--c-canvas-bg',  rgb(canvasBg));
+  root.style.setProperty('--c-panel',      rgb(panel));
+  root.style.setProperty('--c-card',       rgb(card));
+  root.style.setProperty('--c-input-bg',   rgb(inputBg));
+  root.style.setProperty('--c-border',     rgb(border));
+  root.style.setProperty('--c-text',       rgb(text));
+  root.style.setProperty('--c-text-dim',   rgb(textDim));
+  root.style.setProperty('--c-text-muted', rgb(textMuted));
+  root.style.setProperty('--c-accent',     rgb(accent));
+  root.style.setProperty('--c-warning',    rgb(warning));
+  root.style.setProperty('--c-success',    rgb(success));
+  root.style.setProperty('--c-info',       rgb(info));
+  root.style.setProperty('--c-error',      rgb(error));
+}
+
+function indicesToImageData(indices, w, h) {
+  const imgData = new ImageData(w, h);
+  for (let j = 0; j < w * h; j++) {
+    const [r, g, b] = PALETTE[indices[j]];
+    imgData.data[j*4] = r;
+    imgData.data[j*4+1] = g;
+    imgData.data[j*4+2] = b;
+    imgData.data[j*4+3] = 255;
+  }
+  return imgData;
+}
+
+function b64ToIndices(b64) {
+  const raw = atob(b64);
+  const arr = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) arr[i] = raw.charCodeAt(i);
+  return arr;
+}
+
+/** Render palette indices to canvas. Tries WebGPU (best, no round-trip when
+ *  ONNX is on GPU), falls back to WebGL2 (universal, same shader concept).
+ *  No canvas2D fallback — both paths cover 100% of modern browsers. */
+function renderIndices(canvas, indices, w, h, displaySize) {
+  if (canvas.width !== w) canvas.width = w;
+  if (canvas.height !== h) canvas.height = h;
+  if (displaySize) {
+    canvas.style.width = displaySize + 'px';
+    canvas.style.height = displaySize + 'px';
+  }
+  // Prefer WebGPU if globally available
+  if (GPU && renderIndicesGPU(canvas, indices, w, h)) return;
+  // Universal fallback (Firefox stable Linux, etc)
+  if (renderIndicesGL2(canvas, indices, w, h)) return;
+  throw new Error('No GPU renderer available — WebGPU and WebGL2 both failed for ' + (canvas.id || '<anon>'));
+}
+
+// Kept for callers that already have ImageData (no indices available).
+function drawImageData(canvas, imgData, displaySize) {
+  canvas.width = imgData.width;
+  canvas.height = imgData.height;
+  if (displaySize) {
+    canvas.style.width = displaySize + 'px';
+    canvas.style.height = displaySize + 'px';
+  }
+  canvas.getContext('2d').putImageData(imgData, 0, 0);
+}
+
+function computeAccuracy(origIndices, decodedIndices) {
+  let match = 0;
+  for (let i = 0; i < origIndices.length; i++) {
+    if (origIndices[i] === decodedIndices[i]) match++;
+  }
+  return (match / origIndices.length * 100).toFixed(1);
+}
+
+// ============================================================
+// Gallery
+// ============================================================
+const decodedIndicesCache = {};
+
+// ============================================================
+// Persistent decoded-indices cache (IndexedDB)
+// ============================================================
+// Same hash + same model version → ONNX produces the same output. Persist
+// the decoded indices so 2nd+ page loads skip ONNX entirely.
+const IDB_DB = 'redstars-demo';
+const IDB_STORE = 'decoded';
+let _idb = null;
+function openIDB() {
+  if (_idb) return _idb;
+  _idb = new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_DB, 1);
+    req.onupgradeneeded = e => e.target.result.createObjectStore(IDB_STORE);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  }).catch(e => { console.warn('IDB open failed:', e.message); return null; });
+  return _idb;
+}
+async function idbGet(key) {
+  const db = await openIDB(); if (!db) return null;
+  return new Promise(resolve => {
+    const tx = db.transaction(IDB_STORE, 'readonly');
+    const req = tx.objectStore(IDB_STORE).get(key);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => resolve(null);
+  });
+}
+async function idbPut(key, value) {
+  const db = await openIDB(); if (!db) return;
+  return new Promise(resolve => {
+    const tx = db.transaction(IDB_STORE, 'readwrite');
+    const req = tx.objectStore(IDB_STORE).put(value, key);
+    req.onsuccess = () => resolve();
+    req.onerror = () => resolve();  // ignore quota errors
+  });
+}
+function idbKey(hash) {
+  // Cache invalidates when the model epoch (in demo_data.json) bumps.
+  return `idx:ep${DATA?.epoch ?? '?'}:${hash}`;
+}
+
+function buildGallery() {
+  const gallery = document.getElementById('gallery');
+  gallery.innerHTML = '';
+
+  DATA.items.forEach((item, i) => {
+    const card = document.createElement('div');
+    card.className = 'card';
+
+    card.innerHTML = `
+      <h3>${item.name} <span class="acc" id="acc${i}">${item.accuracy}%</span><span class="time" id="time${i}"></span></h3>
+      <div class="compare-row">
+        <div class="compare-box">
+          <canvas id="orig${i}"></canvas>
+          <span class="compare-label" style="color:var(--c-accent)">Original</span>
+        </div>
+        <div class="compare-box">
+          <canvas id="dec${i}"></canvas>
+          <span class="compare-label" style="color:var(--c-error)">Decoded</span>
+        </div>
+      </div>
+    `;
+    gallery.appendChild(card);
+  });
+}
+
+async function renderCard(i, useOnnx) {
+  const item = DATA.items[i];
+
+  // Original
+  const origIndices = b64ToIndices(item.orig_indices);
+  renderIndices(document.getElementById(`orig${i}`), origIndices, DECODE_W, DECODE_H, 256);
+
+  // Decoded — use pre-computed or ONNX live
+  let decodedIndices;
+  let dt = 0;
+
+  if (useOnnx && session && item.hash) {
+    // Live ONNX decode (3-tier cache: in-memory → IndexedDB → ONNX)
+    if (decodedIndicesCache[i]) {
+      decodedIndices = decodedIndicesCache[i];
+    } else {
+      const cached = await idbGet(idbKey(item.hash));
+      if (cached) {
+        decodedIndices = new Uint8Array(cached);
+        decodedIndicesCache[i] = decodedIndices;
+        dt = 0;  // free
+      } else {
+        const result = await decodeLatent(item.hash);
+        // Prefer GPU compute argmax — falls back to JS argmax if no WebGPU.
+        decodedIndices = await argmaxGPU(result.logits);
+        if (!decodedIndices) decodedIndices = logitsToIndices(result.logits);
+        dt = result.dt;
+        decodedIndicesCache[i] = decodedIndices;
+        // Persist for next reload (fire-and-forget; copy buffer to detach)
+        idbPut(idbKey(item.hash), decodedIndices.buffer.slice(0));
+      }
+    }
+  } else {
+    // Pre-computed from Python
+    decodedIndices = b64ToIndices(item.decoded_indices);
+  }
+
+  renderIndices(document.getElementById(`dec${i}`), decodedIndices, DECODE_W, DECODE_H, 256);
+
+  const acc = computeAccuracy(origIndices, decodedIndices);
+  document.getElementById(`acc${i}`).textContent = `${acc}%`;
+  if (dt > 0) document.getElementById(`time${i}`).textContent = `(${dt.toFixed(0)}ms)`;
+}
+
+// ============================================================
+// Render all cards
+// ============================================================
+// Default: live ONNX decode (matches what users see in prod, slight visual
+// difference vs Python precomputed on fine details). Toggle off to use the
+// Python-precomputed indices baked into demo_data.json.
+window._USE_LIVE_ONNX = true
+
+/**
+ * Batch ONNX decode: stack all not-yet-cached latents into one (B,4,32,32)
+ * tensor, run the decoder ONCE, slice the (B,256,256,256) output back per
+ * card, run argmax per slice. Saves ~30% wall-clock on the gallery vs N
+ * separate forward passes.
+ *
+ * Dynamic batch axis comes from the ONNX export (dynamic_axes={"latent":{0:"batch"}}).
+ */
+async function batchDecodeMissing() {
+  if (!session) return new Map()
+  // Collect items that aren't already cached (in-memory or IDB).
+  const queue = [];
+  for (let i = 0; i < DATA.items.length; i++) {
+    const item = DATA.items[i];
+    if (!item.hash) continue;
+    if (decodedIndicesCache[i]) continue;
+    const cached = await idbGet(idbKey(item.hash));
+    if (cached) {
+      decodedIndicesCache[i] = new Uint8Array(cached);
+      continue;
+    }
+    queue.push({ i, hash: item.hash });
+  }
+  if (queue.length === 0) return new Map();
+
+  // Stack latents: (B, 4, 32, 32)
+  const B = queue.length;
+  const PER = LATENT_C * LATENT_H * LATENT_W;
+  const stacked = new Float32Array(B * PER);
+  for (let b = 0; b < B; b++) {
+    const lat = unpackLatent(queue[b].hash);
+    stacked.set(lat, b * PER);
+  }
+  const tensor = new ort.Tensor('float32', stacked, [B, LATENT_C, LATENT_H, LATENT_W]);
+  const t0 = performance.now();
+  const results = await session.run({ latent: tensor });
+  const dt = performance.now() - t0;
+  window.__BATCH_DECODE_MS = dt;
+  window.__BATCH_DECODE_N = B;
+
+  // Output: (B, 256, 256, 256). Prefer the GPUBuffer path (zero-copy from
+  // ORT to compute shader) — falls back to CPU readback if not available.
+  const SLICE = 256 * 256 * 256;
+  const SLICE_BYTES = SLICE * 4;
+  const out = new Map();
+  const gpuBuffer = results.logits.gpuBuffer;
+  if (gpuBuffer && GPU) {
+    window.__ZEROCOPY_LOGITS = true;
+    for (let b = 0; b < B; b++) {
+      const indices = await argmaxGPU(null, { gpuBuffer, byteOffset: b * SLICE_BYTES });
+      if (!indices) break;
+      decodedIndicesCache[queue[b].i] = indices;
+      idbPut(idbKey(queue[b].hash), indices.buffer.slice(0));
+      out.set(queue[b].i, indices);
+    }
+    // Release ORT's tensor — its GPUBuffer is no longer needed.
+    if (results.logits.dispose) results.logits.dispose();
+  } else {
+    window.__ZEROCOPY_LOGITS = false;
+    const allLogits = results.logits.data;
+    for (let b = 0; b < B; b++) {
+      const slice = allLogits.subarray(b * SLICE, (b + 1) * SLICE);
+      let indices = await argmaxGPU(slice);
+      if (!indices) indices = logitsToIndices(slice);
+      decodedIndicesCache[queue[b].i] = indices;
+      idbPut(idbKey(queue[b].hash), indices.buffer.slice(0));
+      out.set(queue[b].i, indices);
+    }
+  }
+  return out;
+}
+
+async function renderAllCards() {
+  // Read the actual checkbox state in case user toggled before init finished
+  const cb = document.getElementById('liveOnnxToggle')
+  if (cb) window._USE_LIVE_ONNX = cb.checked
+  const useOnnx = !!session && window._USE_LIVE_ONNX;
+  window.__CARD_TIMES = []
+  // Pre-decode missing cards in one batch ONNX call. After this, renderCard
+  // hits the in-memory cache for every item — no separate forward passes.
+  if (useOnnx) {
+    try { await batchDecodeMissing() } catch (e) { console.warn('batch decode failed, falling back per-card', e) }
+  }
+  for (let i = 0; i < DATA.items.length; i++) {
+    const t = performance.now()
+    await renderCard(i, useOnnx);
+    window.__CARD_TIMES.push(performance.now() - t)
+  }
+}
+
+window.toggleLiveOnnx = function() {
+  window._USE_LIVE_ONNX = document.getElementById('liveOnnxToggle').checked
+  // Drop the cache — the alternate path produces the same output but we want to
+  // show that re-decoding is what's slow, not just rendering.
+  for (const k in decodedIndicesCache) delete decodedIndicesCache[k]
+  renderAllCards()
+}
+
+// ============================================================
+// Init
+// ============================================================
+async function init() {
+  // Kick off ONNX session creation + WebGPU renderer init in parallel with
+  // the data fetch — saves wall-clock since they're all independent.
+  const onnxReady = initOnnx();
+  const gpuReady = initGPU();
+  const resp = await fetch('demo_data.json');
+  const raw = await resp.json();
+  // Normalize data format
+  PALETTE = raw.palette;  // array of "#rrggbb" hex strings
+  DATA = {
+    epoch: raw.epoch,
+    items: (raw.images || raw.items || []).map(img => ({
+      name: img.name || 'sample',
+      orig_indices: img.orig || img.orig_indices,
+      decoded_indices: img.decoded || img.decoded_indices,
+      hash: img.hash,
+      accuracy: parseFloat(img.accuracy) || 0,
+    })),
+  };
+
+  document.getElementById('subtitleInfo').textContent =
+    `Epoch ${DATA.epoch} — ${DATA.items.length} samples — 256 RGBL palette`;
+
+  // Palette preview — hex strings to RGB
+  const prev = document.getElementById('palettePreview');
+  PALETTE.forEach(hex => {
+    const d = document.createElement('div');
+    d.className = 'swatch';
+    d.style.backgroundColor = hex;
+    prev.appendChild(d);
+  });
+
+  // Convert PALETTE from hex to [r,g,b] arrays for rendering
+  PALETTE = PALETTE.map(hex => [parseInt(hex.slice(1,3),16), parseInt(hex.slice(3,5),16), parseInt(hex.slice(5,7),16)]);
+  UNIFORM_PALETTE_RGB = PALETTE;
+  // Apply the same palette to the page chrome (bg, cards, text, accents).
+  applyPaletteTheme();
+
+  // Build the palette switcher: uniform first, then all named palettes from data
+  ALL_PALETTES['__uniform__'] = UNIFORM_PALETTE_RGB;
+  const namedPalettes = raw.palettes || {};
+  const sel = document.getElementById('paletteSelect');
+  Object.keys(namedPalettes).sort().forEach(name => {
+    const colors = namedPalettes[name];
+    if (!Array.isArray(colors) || colors.length !== 256) return;
+    // Each entry can be "#rrggbb" hex string OR [r,g,b] array
+    const rgb = colors.map(c => Array.isArray(c)
+      ? [c[0]|0, c[1]|0, c[2]|0]
+      : [parseInt(c.slice(1,3),16), parseInt(c.slice(3,5),16), parseInt(c.slice(5,7),16)]);
+    ALL_PALETTES[name] = rgb;
+    const opt = document.createElement('option');
+    opt.value = name; opt.textContent = name;
+    sel.appendChild(opt);
+  });
+
+  // Average accuracy
+  const avgAcc = DATA.items.reduce((s, it) => s + it.accuracy, 0) / DATA.items.length;
+  document.getElementById('avgAcc').textContent = avgAcc.toFixed(1) + '%';
+
+  try {
+    const head = await fetch('decoder.onnx', { method: 'HEAD' });
+    const sz = parseInt(head.headers.get('content-length') || '0');
+    document.getElementById('modelSize').textContent = (sz / 1024).toFixed(0) + ' KB';
+  } catch {}
+
+  const tBuild0 = performance.now()
+  buildGallery();
+  window.__BUILD_GALLERY_MS = performance.now() - tBuild0
+  // Wait for the parallel session + WebGPU init we kicked off at the top.
+  await onnxReady;
+  await gpuReady;
+  // Active renderer: WebGPU if init succeeded, else WebGL2 if available, else nothing.
+  const rmEl = document.getElementById('renderMode');
+  if (GPU) {
+    rmEl.textContent = '🚀 WebGPU';
+    rmEl.style.color = 'var(--c-accent)';
+    window.__ACTIVE_RENDERER = 'webgpu';
+  } else if (probeGL2Available()) {
+    const note = window.__GPU_ERROR ? ' (WebGPU: ' + window.__GPU_ERROR + ')' : '';
+    rmEl.textContent = '⚡ WebGL2' + note;
+    rmEl.style.color = 'var(--c-warning)';
+    rmEl.title = 'Universal fallback — same palette-texture shader, works on Firefox stable Linux';
+    window.__ACTIVE_RENDERER = 'webgl2';
+  } else {
+    rmEl.textContent = '❌ no GPU renderer';
+    rmEl.style.color = 'var(--c-error)';
+    window.__ACTIVE_RENDERER = 'none';
+  }
+  // Show the WebGPU activation nudge if applicable (Firefox + no WebGPU + not dismissed)
+  maybeShowWebGPUPopup();
+  const tRender0 = performance.now()
+  await renderAllCards();
+  window.__RENDER_ALL_MS = performance.now() - tRender0
+
+  // Pixelated toggle — applies to ALL canvases + images on the entire page
+  window.togglePixelated = function() {
+    const on = document.getElementById('pixelatedToggle').checked;
+    const val = on ? 'pixelated' : 'auto';
+    document.querySelectorAll('canvas, img').forEach(el => {
+      el.style.imageRendering = val;
+    });
+    // Also set a CSS variable so dynamically created elements inherit it
+    document.body.style.setProperty('--img-rendering', val);
+  };
+
+  // Palette switcher — swap PALETTE in-place and re-render every canvas that
+  // uses indices (gallery + POC). Indices are unchanged — only their RGB
+  // mapping flips, which is the whole point of palette swap.
+  window.changePalette = function(name) {
+    const next = ALL_PALETTES[name];
+    if (!next) return;
+    const tSwap = performance.now();
+    PALETTE = next;
+    GPU_PALETTE_DIRTY = true;  // 1 KB texture upload happens on next render
+    applyPaletteTheme();        // re-theme bg/cards/text/accents from the same palette
+    // Refresh swatches at top
+    const prev = document.getElementById('palettePreview');
+    prev.innerHTML = '';
+    PALETTE.forEach(([r,g,b]) => {
+      const d = document.createElement('div');
+      d.className = 'swatch';
+      d.style.backgroundColor = `rgb(${r},${g},${b})`;
+      prev.appendChild(d);
+    });
+    // Re-render gallery (cached indices → only GPU draw, no ONNX, no JS pixel loop)
+    Promise.resolve(renderAllCards()).then(() => {
+      // Re-render POC canvases if they have content
+      if (pocQuantizedIndices) {
+        renderIndices(document.getElementById('pocOriginal'), pocQuantizedIndices, 256, 256);
+      }
+      if (window._pocLastDecodedIndices) {
+        renderIndices(document.getElementById('pocDecoded'), window._pocLastDecodedIndices, 256, 256);
+      }
+      const dt = performance.now() - tSwap;
+      const n = (DATA?.items?.length || 0) * 2 + (pocQuantizedIndices ? 1 : 0) + (window._pocLastDecodedIndices ? 1 : 0);
+      const swapEl = document.getElementById('paletteSwapTime');
+      if (swapEl) {
+        swapEl.textContent = `Last swap: ${dt.toFixed(1)} ms across ${n} canvas${n === 1 ? '' : 'es'}`;
+        swapEl.style.color = dt < 20 ? 'var(--c-accent)' : dt < 100 ? 'var(--c-warning)' : 'var(--c-error)';
+      }
+    });
+  };
+
+  document.getElementById('footerInfo').textContent =
+    `v2 RGB: soft palette selection — ONNX decode client-side — 1024B BYTEA — CSS pixelated upscale`;
+
+  // Render the timing breakdown after first paint so the page settles first
+  setTimeout(renderTimingPanel, 100)
+}
+
+// Pull resource timing entries from the Performance API. transferSize === 0
+// is the canonical signal for "served from cache" (browser cache *or* SW).
+function findResourceEntry(matcher) {
+  const entries = performance.getEntriesByType('resource')
+  return entries.find(e => matcher(e.name))
+}
+
+function fmtBytes(b) {
+  if (!b || b === 0) return '—'
+  if (b < 1024) return b + ' B'
+  if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB'
+  return (b / 1024 / 1024).toFixed(2) + ' MB'
+}
+
+function fmtMs(ms) {
+  if (ms == null) return '—'
+  if (ms < 1) return '<1 ms'
+  if (ms < 1000) return ms.toFixed(0) + ' ms'
+  return (ms / 1000).toFixed(2) + ' s'
+}
+
+function renderTimingPanel() {
+  const swState = document.getElementById('swState')
+  swState.textContent = 'SW: ' + (window.__SW_STATE || 'pending')
+  swState.style.color = (window.__SW_STATE || '').startsWith('active') ? 'var(--c-accent)' :
+                        (window.__SW_STATE || '').startsWith('installing') ? 'var(--c-warning)' : 'var(--c-text-muted)'
+
+  const rows = []
+  const matchers = [
+    { label: 'ort.min.js (CDN)', test: u => u.includes('cdn.jsdelivr.net') && u.includes('ort.min.js') },
+    { label: 'ort-wasm-*.wasm', test: u => /ort-wasm.*\.wasm(\?|$)/.test(u) },
+    { label: 'ort-wasm-*.mjs/.js', test: u => /ort-wasm.*\.(mjs|js)(\?|$)/.test(u) },
+    { label: 'decoder.onnx', test: u => /\/decoder\.onnx$/.test(u) },
+    { label: 'encoder.onnx', test: u => /\/encoder\.onnx$/.test(u), note: '(loaded on-demand for POC)' },
+    { label: 'demo_data.json', test: u => /\/demo_data\.json$/.test(u) },
+  ]
+  let totalNet = 0
+  for (const m of matchers) {
+    const e = findResourceEntry(m.test)
+    if (!e) {
+      rows.push({ label: m.label, source: m.note || 'not loaded', size: '—', dur: '—', color: 'var(--c-text-muted)' })
+      continue
+    }
+    const cached = e.transferSize === 0
+    const dur = e.responseEnd - e.startTime
+    if (!cached) totalNet += dur
+    rows.push({
+      label: m.label,
+      source: cached ? '✓ cache (SW or browser)' : 'network',
+      size: cached ? fmtBytes(e.encodedBodySize) + ' (cached)' : fmtBytes(e.transferSize),
+      dur: fmtMs(dur),
+      color: cached ? 'var(--c-accent)' : 'var(--c-warning)'
+    })
+  }
+  rows.push({
+    label: `JIT compile decoder (ORT, ${window.__ORT_PROVIDER || '?'})`,
+    source: window.__ORT_PROVIDER === 'webgpu' ? '🚀 GPU' : 'CPU work',
+    size: '—',
+    dur: fmtMs(window.__JIT_DECODER_MS),
+    color: window.__ORT_PROVIDER === 'webgpu' ? 'var(--c-accent)' : 'var(--c-error)'
+  })
+  rows.push({
+    label: 'buildGallery() (DOM)', source: 'CPU work', size: '—',
+    dur: fmtMs(window.__BUILD_GALLERY_MS), color: 'var(--c-text-muted)'
+  })
+  // Card-by-card decode timings (each runs an ONNX inference)
+  const cardTimes = window.__CARD_TIMES || []
+  const totalCards = cardTimes.reduce((s, t) => s + t, 0)
+  if (cardTimes.length > 0) {
+    const mode = window._USE_LIVE_ONNX ? 'live ONNX' : 'precomputed indices'
+    rows.push({
+      label: `renderAllCards (${cardTimes.length} cards, ${mode})`,
+      source: 'CPU work', size: '—',
+      dur: fmtMs(window.__RENDER_ALL_MS), color: window._USE_LIVE_ONNX ? 'var(--c-error)' : 'var(--c-accent)', bold: true
+    })
+    cardTimes.forEach((t, i) => {
+      rows.push({
+        label: `   ↳ card #${i+1} decode`, source: '', size: '—',
+        dur: fmtMs(t), color: 'var(--c-text-muted)'
+      })
+    })
+  }
+  rows.push({
+    label: 'TOTAL (page → ready)', source: '', size: '',
+    dur: fmtMs(performance.now() - window.__SCRIPT_START), color: 'var(--c-text)', bold: true
+  })
+
+  const html = rows.map(r => `
+    <tr style="${r.bold ? 'font-weight:bold;border-top:1px solid var(--c-border);' : ''}">
+      <td style="padding:3px 6px;color:${r.color}">${r.label}</td>
+      <td style="text-align:right;padding:3px 6px;color:${r.color}">${r.source}</td>
+      <td style="text-align:right;padding:3px 6px;color:var(--c-text-muted)">${r.size}</td>
+      <td style="text-align:right;padding:3px 6px;color:${r.color}">${r.dur}</td>
+    </tr>`).join('')
+  document.getElementById('timingRows').innerHTML = html
+}
+
+// Helper detection runs independently of ONNX init — fires immediately,
+// fills the helper panel even if the heavy ML init is still in progress.
+setupHelper();
+init();
+
+// ============================================================
+// POC Workflow: Select → Encode → Hash → Decode
+// ============================================================
+let pocEncoder = null;
+let pocDecoder = null;
+let pocQuantizedIndices = null;
+
+async function pocInitModels() {
+  const status = document.getElementById('pocEncodeStatus');
+  status.textContent = 'Loading encoder...';
+  try {
+    pocEncoder = await ort.InferenceSession.create('encoder.onnx', { executionProviders: ['wasm'] });
+    status.textContent = 'Loading decoder...';
+    pocDecoder = await ort.InferenceSession.create('decoder.onnx', { executionProviders: ['wasm'] });
+    status.textContent = 'Models ready';
+    status.style.color = 'var(--c-accent)';
+  } catch(e) {
+    status.textContent = 'Model load failed: ' + e.message;
+    status.style.color = 'var(--c-error)';
+    console.error(e);
+  }
+}
+
+function pocLoadImage(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const img = new Image();
+  img.onload = function() {
+    // Resize to 256x256 and quantize to palette
+    const tmpCanvas = document.createElement('canvas');
+    tmpCanvas.width = 256; tmpCanvas.height = 256;
+    const ctx = tmpCanvas.getContext('2d');
+    ctx.drawImage(img, 0, 0, 256, 256);
+    const pixels = ctx.getImageData(0, 0, 256, 256).data;
+
+    // Quantize each pixel to nearest palette color
+    const indices = new Uint8Array(256 * 256);
+    const pal = PALETTE; // already [r,g,b] arrays after init()
+    for (let i = 0; i < 256*256; i++) {
+      const pr = pixels[i*4], pg = pixels[i*4+1], pb = pixels[i*4+2];
+      let bestDist = Infinity, bestIdx = 0;
+      for (let c = 0; c < 256; c++) {
+        const dr = pr - pal[c][0], dg = pg - pal[c][1], db = pb - pal[c][2];
+        const d = dr*dr + dg*dg + db*db;
+        if (d < bestDist) { bestDist = d; bestIdx = c; }
+      }
+      indices[i] = bestIdx;
+    }
+    pocQuantizedIndices = indices;
+
+    // Draw quantized original (WebGPU palette renderer if available)
+    renderIndices(document.getElementById('pocOriginal'), indices, 256, 256);
+
+    // Enable encode button
+    document.getElementById('pocEncodeBtn').disabled = false;
+    document.getElementById('pocHash').value = '';
+    document.getElementById('pocAccuracy').textContent = '—';
+    document.getElementById('pocDecoded').getContext('2d').clearRect(0, 0, 256, 256);
+
+    // Auto-init models if not done
+    if (!pocEncoder) pocInitModels();
+  };
+  img.src = URL.createObjectURL(file);
+}
+
+function pocPackLatent(latentData) {
+  // latent: Float32Array (4*32*32 = 4096) → quantize to 2bit → pack to 1024 bytes
+  const total = 4 * 32 * 32;
+  const quantized = new Uint8Array(total);
+  for (let i = 0; i < total; i++) {
+    const v = latentData[i];
+    const clamped = Math.tanh(v / 3) * 3;
+    quantized[i] = Math.min(3, Math.max(0, Math.round((clamped + 3) / 6 * 3)));
+  }
+  // Pack 4 values per byte (2 bits each)
+  const raw = new Uint8Array(1024);
+  for (let i = 0; i < total; i += 4) {
+    raw[i/4] = (quantized[i] << 6) | (quantized[i+1] << 4) | (quantized[i+2] << 2) | quantized[i+3];
+  }
+  return raw;
+}
+
+function pocUnpackLatent(raw) {
+  const total = 4 * 32 * 32;
+  const vals = new Float32Array(total);
+  // Use idx*2 - 3 (exact integer math) to match Python's Quantize2BitSTE.
+  // The previous (idx/3*6 - 3) introduced ~4e-8 ε that amplified through
+  // the decoder and shifted argmax on fine edge pixels.
+  for (let i = 0; i < 1024; i++) {
+    const byte = raw[i];
+    vals[i*4]   = ((byte >> 6) & 3) * 2 - 3;
+    vals[i*4+1] = ((byte >> 4) & 3) * 2 - 3;
+    vals[i*4+2] = ((byte >> 2) & 3) * 2 - 3;
+    vals[i*4+3] = (byte & 3) * 2 - 3;
+  }
+  return vals;
+}
+
+let pocRawLatent = null; // Store raw encoder output for direct decode
+
+async function pocEncode() {
+  if (!pocEncoder || !pocQuantizedIndices) return;
+  const status = document.getElementById('pocEncodeStatus');
+  status.textContent = 'Encoding...'; status.style.color = 'var(--c-text-muted)';
+
+  // Convert indices to RGB float tensor (1, 3, 256, 256)
+  const pal = PALETTE.map(([r,g,b]) => [r/255, g/255, b/255]);
+  const rgb = new Float32Array(3 * 256 * 256);
+  for (let i = 0; i < 256*256; i++) {
+    const [r, g, b] = pal[pocQuantizedIndices[i]];
+    rgb[i] = r;
+    rgb[256*256 + i] = g;
+    rgb[2*256*256 + i] = b;
+  }
+
+  const t0 = performance.now();
+  const tensor = new ort.Tensor('float32', rgb, [1, 3, 256, 256]);
+  const encResult = await pocEncoder.run({ rgb: tensor });
+  const latent = encResult.latent.data;
+  pocRawLatent = new Float32Array(latent); // Keep raw for direct decode
+  const encDt = (performance.now() - t0).toFixed(0);
+
+  // Pack to 1024 bytes (for display — lossy 2-bit quantization)
+  const raw = pocPackLatent(latent);
+  const b64 = btoa(String.fromCharCode(...raw));
+  document.getElementById('pocHash').value = b64;
+
+  // Direct decode with raw (continuous) latent — no quantization loss
+  status.textContent = 'Decoding...';
+  const t1 = performance.now();
+  const latTensor = new ort.Tensor('float32', pocRawLatent, [1, 4, 32, 32]);
+  const decResult = await pocDecoder.run({ latent: latTensor });
+  const logits = decResult.logits.data;
+  const decDt = (performance.now() - t1).toFixed(0);
+
+  const decodedIndices = logitsToIndices(logits);
+  window._pocLastDecodedIndices = decodedIndices;
+  renderIndices(document.getElementById('pocDecoded'), decodedIndices, 256, 256);
+
+  const acc = computeAccuracy(pocQuantizedIndices, decodedIndices);
+  document.getElementById('pocAccuracy').textContent = `Accuracy: ${acc}%`;
+  document.getElementById('pocHashInfo').textContent =
+    `${raw.length} bytes raw | ${b64.length} chars b64 | enc ${encDt}ms + dec ${decDt}ms`;
+  document.getElementById('pocDecodeBtn').disabled = false;
+  status.textContent = `Done (${encDt}ms + ${decDt}ms)`; status.style.color = 'var(--c-accent)';
+}
+
+async function pocDecode() {
+  if (!pocDecoder) return;
+  const status = document.getElementById('pocDecodeStatus');
+  status.textContent = 'Decoding...'; status.style.color = 'var(--c-text-muted)';
+
+  const b64 = document.getElementById('pocHash').value.trim();
+  if (!b64) { status.textContent = 'No hash'; status.style.color = 'var(--c-error)'; return; }
+
+  // Decode from hash (2-bit quantized) — shows quality loss from compression
+  const rawStr = atob(b64);
+  const raw = new Uint8Array(rawStr.length);
+  for (let i = 0; i < rawStr.length; i++) raw[i] = rawStr.charCodeAt(i);
+  const latent = pocUnpackLatent(raw);
+
+  const t0 = performance.now();
+  const tensor = new ort.Tensor('float32', latent, [1, 4, 32, 32]);
+  const result = await pocDecoder.run({ latent: tensor });
+  const logits = result.logits.data;
+  const dt = (performance.now() - t0).toFixed(0);
+
+  const decodedIndices = logitsToIndices(logits);
+  window._pocLastDecodedIndices = decodedIndices;
+  renderIndices(document.getElementById('pocDecoded'), decodedIndices, 256, 256);
+
+  if (pocQuantizedIndices) {
+    const acc = computeAccuracy(pocQuantizedIndices, decodedIndices);
+    document.getElementById('pocAccuracy').textContent = `Hash decode: ${acc}% (2-bit quantized) | ${dt}ms`;
+  }
+  status.textContent = `Decoded (${dt}ms)`; status.style.color = 'var(--c-error)';
+}
+</script>
+<!-- ============= Frame profiler HUD (toggle: F2) ============= -->
+<div id="profHUD" style="position:fixed;bottom:8px;right:8px;width:280px;background:var(--c-panel);border:1px solid var(--c-border);border-radius:8px;padding:10px 12px;font-family:monospace;font-size:0.7em;color:var(--c-text-dim);z-index:999;display:none;line-height:1.45;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+    <span style="color:var(--c-accent);font-weight:bold;">⏱ Frame profiler</span>
+    <span style="color:var(--c-text-muted);font-size:0.85em;">F2 to toggle</span>
+  </div>
+  <div style="display:flex;gap:10px;margin-bottom:6px;">
+    <span>FPS <b id="profFps" style="color:var(--c-success);">--</b></span>
+    <span>last <b id="profFrameMs">-- ms</b></span>
+    <span>p99 <b id="profP99">-- ms</b></span>
+  </div>
+  <canvas id="profGraph" width="256" height="48" style="background:var(--c-input-bg);border-radius:3px;width:100%;height:48px;image-rendering:pixelated;"></canvas>
+  <div style="display:flex;justify-content:space-between;font-size:0.75em;color:var(--c-text-muted);margin-top:2px;">
+    <span>0</span><span>16ms (60fps)</span><span>33ms</span>
+  </div>
+  <div id="profEvents" style="margin-top:8px;border-top:1px solid var(--c-border);padding-top:6px;max-height:140px;overflow-y:auto;">
+    <div style="color:var(--c-text-muted);font-style:italic;">no events captured yet</div>
+  </div>
+</div>
+<script>
+// ============================================================
+// Frame profiler — game-engine style live perf HUD
+// ============================================================
+// Tracks rAF frame times + auto-instruments named operations via
+// performance.measure(). Toggle with F2.
+
+(function setupProfiler() {
+  const HUD = document.getElementById('profHUD');
+  const fpsEl = document.getElementById('profFps');
+  const lastEl = document.getElementById('profFrameMs');
+  const p99El = document.getElementById('profP99');
+  const graphCanvas = document.getElementById('profGraph');
+  const events = document.getElementById('profEvents');
+
+  // Frame ring buffer (last 128 frames)
+  const N = 128;
+  const frames = new Float32Array(N).fill(16);
+  let frameIdx = 0, lastT = performance.now();
+
+  // Operation log (recent named events)
+  const logBuf = [];
+  function logEvent(name, ms, kind = 'op') {
+    logBuf.unshift({ name, ms, kind, t: Date.now() });
+    logBuf.length = Math.min(logBuf.length, 40);
+  }
+
+  // Wrap performance.mark/measure so we capture named operations.
+  // The page already calls these in some places; we also auto-instrument.
+  const _measure = performance.measure.bind(performance);
+  performance.measure = function(name, opts, end) {
+    const r = _measure(name, opts, end);
+    const entry = performance.getEntriesByName(name).slice(-1)[0];
+    if (entry && entry.duration > 0) {
+      logEvent(name, entry.duration);
+    }
+    return r;
+  };
+
+  // Auto-instrument key functions on the page.
+  const wrap = (obj, fn, label, kind = 'op') => {
+    const orig = obj[fn];
+    if (!orig) return;
+    obj[fn] = async function(...args) {
+      const t0 = performance.now();
+      try {
+        return await orig.apply(this, args);
+      } finally {
+        const dt = performance.now() - t0;
+        if (dt > 0.5) logEvent(label, dt, kind);
+      }
+    };
+  };
+  // Attach when the symbols become available (init runs after this script).
+  setTimeout(() => {
+    if (typeof renderCard === 'function')   wrap(window, 'renderCard',   'render card');
+    if (typeof decodeLatent === 'function') wrap(window, 'decodeLatent', 'ONNX decode',  'decode');
+    if (typeof refreshUsbPanel === 'function') wrap(window, 'refreshUsbPanel', 'USB poll', 'fetch');
+    if (typeof pollScale === 'function')    wrap(window, 'pollScale',    'scale poll',  'fetch');
+    if (typeof applyPaletteTheme === 'function') wrap(window, 'applyPaletteTheme', 'theme css vars');
+    if (typeof renderAllCards === 'function') wrap(window, 'renderAllCards', 'render gallery');
+  }, 100);
+
+  // PerformanceObserver — long tasks (>50 ms) flagged as spikes.
+  if ('PerformanceObserver' in window) {
+    try {
+      new PerformanceObserver(list => {
+        for (const e of list.getEntries()) {
+          if (e.duration > 50) logEvent('LONG TASK ' + e.name, e.duration, 'spike');
+        }
+      }).observe({ entryTypes: ['longtask'] });
+    } catch {}
+  }
+
+  // Render the HUD every animation frame
+  function tick(t) {
+    const dt = t - lastT;
+    lastT = t;
+    frames[frameIdx] = dt;
+    frameIdx = (frameIdx + 1) % N;
+
+    if (HUD.style.display !== 'none') {
+      // FPS = 1000 / mean(last 30 frames)
+      let sum30 = 0;
+      for (let i = 0; i < 30; i++) sum30 += frames[(frameIdx - 1 - i + N) % N];
+      const fps = 1000 / (sum30 / 30);
+      fpsEl.textContent = fps.toFixed(0);
+      fpsEl.style.color = fps >= 55 ? 'var(--c-success)' : fps >= 30 ? 'var(--c-warning)' : 'var(--c-error)';
+      lastEl.textContent = dt.toFixed(1) + ' ms';
+      const sorted = [...frames].sort((a, b) => a - b);
+      p99El.textContent = sorted[Math.floor(N * 0.99)].toFixed(1) + ' ms';
+
+      // Frame graph — bars colored by frame budget (green=60fps, orange=30, red>33ms)
+      const ctx = graphCanvas.getContext('2d');
+      ctx.clearRect(0, 0, 256, 48);
+      // 16ms reference line
+      ctx.fillStyle = 'rgba(255,255,255,0.07)';
+      ctx.fillRect(0, 48 - (16 / 33) * 48, 256, 1);
+      ctx.fillRect(0, 48 - 48, 256, 1);
+      const W = 256 / N;
+      for (let i = 0; i < N; i++) {
+        const v = frames[(frameIdx + i) % N];
+        const h = Math.min(48, (v / 33) * 48);
+        ctx.fillStyle = v > 33 ? '#e94560' : v > 16 ? '#e9a560' : '#4a9';
+        ctx.fillRect(i * W, 48 - h, Math.max(1, W - 0.5), h);
+      }
+
+      // Events log — recent named ops
+      if (logBuf.length === 0) {
+        events.innerHTML = '<div style="color:var(--c-text-muted);font-style:italic;">no events yet</div>';
+      } else {
+        const now = Date.now();
+        events.innerHTML = logBuf.slice(0, 12).map(e => {
+          const age = ((now - e.t) / 1000).toFixed(1);
+          const color = e.kind === 'spike' ? 'var(--c-error)'
+                      : e.kind === 'decode' ? 'var(--c-warning)'
+                      : e.kind === 'fetch' ? 'var(--c-info)'
+                      : 'var(--c-accent)';
+          return `<div style="display:flex;justify-content:space-between;gap:8px;">
+            <span style="color:${color};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${e.name}</span>
+            <span style="color:var(--c-text-muted);">${e.ms.toFixed(1)}ms · ${age}s</span>
+          </div>`;
+        }).join('');
+      }
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  // Toggle with F2
+  document.addEventListener('keydown', e => {
+    if (e.key === 'F2') {
+      HUD.style.display = HUD.style.display === 'none' ? 'block' : 'none';
+      e.preventDefault();
+    }
+  });
+
+  // Show by default on first load — comment out to start hidden
+  HUD.style.display = 'block';
+})();
+</script>
+</body>
+</html>

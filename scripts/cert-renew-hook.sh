@@ -25,10 +25,14 @@ esac
 
 echo "[helper-renew] new cert at $CERT_LIVE — repackaging helper"
 
-# 1. Copy fresh cert into the demo dir (which the .deb bundles as resources)
+# 1. Copy fresh cert into the demo dir (dev/test) AND into the helper-tauri repo
+#    bundled/ dir (which the .deb/.dmg/.msi bundles as resources at build time).
 install -m 644 "$CERT_LIVE/fullchain.pem" "$DEMO/cert.pem"
 install -m 600 "$CERT_LIVE/privkey.pem"   "$DEMO/key.pem"
-chown delminator:delminator "$DEMO/cert.pem" "$DEMO/key.pem"
+install -m 644 "$CERT_LIVE/fullchain.pem" "$REPO/src-tauri/bundled/cert.pem"
+install -m 600 "$CERT_LIVE/privkey.pem"   "$REPO/src-tauri/bundled/key.pem"
+chown delminator:delminator "$DEMO/cert.pem" "$DEMO/key.pem" \
+  "$REPO/src-tauri/bundled/cert.pem" "$REPO/src-tauri/bundled/key.pem"
 
 # 2. Bump patch version in tauri.conf.json + Cargo.toml
 cd "$REPO"
@@ -40,7 +44,8 @@ sed -i "s/\"version\": \"$CUR\"/\"version\": \"$NEW\"/" src-tauri/tauri.conf.jso
 sed -i "s/^version = \"$CUR\"$/version = \"$NEW\"/" src-tauri/Cargo.toml
 
 # 3. Commit + tag + push (GH Actions release workflow takes it from here)
-sudo -u delminator git -C "$REPO" add src-tauri/tauri.conf.json src-tauri/Cargo.toml
+sudo -u delminator git -C "$REPO" add src-tauri/tauri.conf.json src-tauri/Cargo.toml \
+  src-tauri/bundled/cert.pem src-tauri/bundled/key.pem
 sudo -u delminator git -C "$REPO" -c user.email=nikola.grange@gmail.com -c user.name=Delminator commit \
   -m "chore: bump to v$NEW — auto cert renewal $(date -I)"
 sudo -u delminator git -C "$REPO" push origin main
