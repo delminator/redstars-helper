@@ -89,8 +89,12 @@ pub fn current_script_path(app: &AppHandle) -> PathBuf {
             return p;
         }
     }
-    // 3. Bundled fallback
-    if let Ok(p) = app.path().resolve(SCRIPT_NAME, tauri::path::BaseDirectory::Resource) {
+    // 3. Bundled fallback. Resources are registered under `bundled/`
+    // in tauri.conf.json so the resolve path must include that prefix —
+    // a bare `SCRIPT_NAME` lands at `<resourceDir>/helper.py` and the
+    // file isn't there, so the daemon never starts.
+    let bundled = format!("bundled/{}", SCRIPT_NAME);
+    if let Ok(p) = app.path().resolve(&bundled, tauri::path::BaseDirectory::Resource) {
         if p.is_file() {
             return p;
         }
