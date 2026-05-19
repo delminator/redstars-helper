@@ -54,7 +54,11 @@ jobs:
             libappindicator3-dev \
             librsvg2-dev \
             libsoup-3.0-dev \
-            patchelf
+            patchelf \
+            rpm
+          # `rpm` package provides rpmbuild on Ubuntu — Tauri uses it to
+          # produce the .rpm bundle alongside .deb and .AppImage. Without
+          # this, the rpm target silently skips and we ship only .deb.
 
       - uses: actions/setup-node@v4
         with:
@@ -92,7 +96,9 @@ jobs:
 
             ## Install
 
-            - **Linux** — `sudo apt install ./redstars-helper_*.deb`
+            - **Debian / Ubuntu / Mint** — `sudo apt install ./redstars-helper_*.deb`
+            - **Fedora / RHEL / openSUSE** — `sudo dnf install ./redstars-helper-*.rpm`
+            - **Arch / Nix / unknown Linux** — `chmod +x *.AppImage && ./*.AppImage`
             - **macOS** — open the `.dmg`
             - **Windows** — run the `.msi`
           releaseDraft: false

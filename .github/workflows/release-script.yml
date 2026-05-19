@@ -1,0 +1,129 @@
+name: Release helper script
+
+# Decoupled release for src-tauri/bundled/helper.py (the auto-updatable
+# logic). The Tauri shell binary rarely changes; this workflow lets the
+# helper.py ship a new version in minutes without rebuilding the .deb /
+# .rpm / .AppImage / .dmg / .msi.
+#
+# Triggers:
+#   - Tag push `script-py-v*` → publishes `helper.py` + signature
+#   - Manual workflow_dispatch  → useful for testing without a tag
+#
+# Tag scheme: `script-py-v1.2.3` (Python script) so it doesn't collide
+# with the shell's `v0.2.6` tags. A future Android JS module would tag
+# `script-js-v1.0.0` in the same repo, same key.
+#
+# Each release uploads three assets:
+#   - helper.py
+#   - helper.py.minisig         (minisign signature)
+#   - script-latest.json        (manifest the backend mirrors)
+#
+# Secrets required:
+#   - TAURI_SIGNING_PRIVATE_KEY            : same minisign key as shell
+#   - TAURI_SIGNING_PRIVATE_KEY_PASSWORD   : "" if generated --password ""
+
+on:
+  push:
+    tags: ['script-py-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. script-py-v1.0.1)'
+        required: true
+
+jobs:
+  publish:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign jq
+
+      - name: Sign helper.py
+        env:
+          PRIVKEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          PRIVKEY_PASS: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp src-tauri/bundled/helper.py out/helper.py
+
+          # Decode the key (CI stores it base64-encoded same as Tauri updater).
+          echo "$PRIVKEY" | base64 -d > /tmp/minisign.key
+
+          # Sign — minisign reads password from stdin
+          echo "$PRIVKEY_PASS" | minisign -S \
+            -s /tmp/minisign.key \
+            -m out/helper.py \
+            -x out/helper.py.minisig \
+            -t "redstars helper.py $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          # Compute SHA-256 + size for the manifest
+          SHA=$(sha256sum out/helper.py | awk '{print $1}')
+          SIZE=$(stat -c%s out/helper.py)
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#script-py-v}"
+
+          # script-latest.json — matches the AgentScriptInfo struct in
+          # apps/backend/pkg/handlers/agents.go
+          jq -n \
+            --arg name "helper.py" \
+            --arg version "$VERSION" \
+            --arg script_url "https://github.com/${{ github.repository }}/releases/download/$TAG/helper.py" \
+            --arg signature_url "https://github.com/${{ github.repository }}/releases/download/$TAG/helper.py.minisig" \
+            --arg sha "$SHA" \
+            --argjson size "$SIZE" \
+            --arg min_shell "0.2.6" \
+            --arg release_notes "See repository for details" \
+            --arg updated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{
+              name: $name,
+              version: $version,
+              script_url: $script_url,
+              signature_url: $signature_url,
+              sha256: $sha,
+              size: $size,
+              min_shell: $min_shell,
+              release_notes: $release_notes,
+              updated_at: $updated_at
+            }' > out/script-latest.json
+
+          # Wipe the key from disk asap
+          rm -f /tmp/minisign.key
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: 'Helper script ${{ github.event.inputs.tag || github.ref_name }}'
+          body: |
+            Auto-updatable `helper.py` for the Tauri shell.
+
+            **What this is:** a signed snapshot of the Python logic that
+            runs the local HTTP helper (USB scale, Firefox prefs writer,
+            demo HTTP server). The Tauri shell (any version ≥ 0.2.6)
+            downloads this file on startup + every 6 h, verifies the
+            minisign signature, and runs it. Users do not need to
+            reinstall the shell when this script updates.
+
+            **Assets:**
+            - `helper.py` — the script itself
+            - `helper.py.minisig` — minisign signature (same key as shell updater)
+            - `script-latest.json` — manifest consumed by the backend `/api/v1/agents/script-latest`
+
+            **Verify locally:**
+            ```
+            minisign -V -P RWSLOkiWKfscZzD9cOda4UFFRyOZJh5lu/lZZ56+oxa152FXiNtvuM/b \
+              -m helper.py -x helper.py.minisig
+            ```
+          files: |
+            out/helper.py
+            out/helper.py.minisig
+            out/script-latest.json
+          draft: false
+          prerelease: false

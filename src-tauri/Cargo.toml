@@ -1,6 +1,6 @@
 [package]
 name = "redstars-helper"
-version = "0.2.5"
+version = "0.2.6"
 description = "Redstars local helper agent"
 authors = ["Redstars"]
 edition = "2021"
@@ -18,8 +18,21 @@ tauri-plugin-shell = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+# tauri-plugin-autostart: registers the binary in the OS autostart
+# mechanism (XDG ~/.config/autostart on Linux, login items on macOS,
+# registry Run key on Windows). First run enables it; uninstalling
+# the helper removes the entry. No systemd unit required.
+tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Script auto-updater (src/script_updater.rs).
+# - reqwest: HTTP client for manifest + script + signature fetch
+# - sha2:    SHA-256 sanity check on the downloaded script bytes
+# - minisign-verify: Ed25519 signature verification, same algorithm as
+#   the Tauri updater plugin so we sign with one minisign key.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
+sha2 = "0.10"
+minisign-verify = "0.2"
 
 [profile.release]
 panic = "abort"
