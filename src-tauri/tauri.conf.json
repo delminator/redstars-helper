@@ -24,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:8080 http://localhost:9999 https://esm.sh https://github.com",
+      "csp": "default-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:9999 http://localhost:9999 https://esm.sh https://github.com",
       "capabilities": ["default"]
     }
   },

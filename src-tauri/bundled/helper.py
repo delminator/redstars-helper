@@ -29,7 +29,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 
 VERSION = '0.4.0'
-PORT = int(os.environ.get('HELPER_PORT', '8080'))
+PORT = int(os.environ.get('HELPER_PORT', '9999'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '8443'))
 DEMO_DIR = Path(__file__).resolve().parent
 CERT_FILE = DEMO_DIR / 'cert.pem'
@@ -40,7 +40,7 @@ KEY_FILE = DEMO_DIR / 'key.pem'
 ALLOWED_ORIGINS = {
     'https://dev.redstars.redlinks.fr',
     'https://redstars.redlinks.fr',
-    'http://localhost:8080',
+    'http://localhost:9999',
     'https://local.redlinks.fr:8443',
 }
 

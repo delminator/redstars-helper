@@ -136,9 +136,11 @@ canvas, img { image-rendering: var(--img-rendering, pixelated); }
       <div id="helperWebGPUResult" style="font-size:0.8em;color:var(--c-text-muted);margin-top:4px;font-family:monospace;word-break:break-all;"></div>
     </div>
     <div style="flex:1.5;min-width:240px;">
-      <div style="color:var(--c-text-muted);font-size:0.85em;margin-bottom:6px;display:flex;justify-content:space-between;">
-        <span>⚖ Balance (CH340 serial)</span>
-        <span id="scaleConn" style="font-size:0.9em;">—</span>
+      <div style="color:var(--c-text-muted);font-size:0.85em;margin-bottom:6px;display:flex;justify-content:space-between;align-items:center;">
+        <span style="display:flex;align-items:center;gap:8px;">⚖ Balance (CH340 serial)
+          <input type="checkbox" id="scaleEnabled" onchange="toggleScale()" style="cursor:pointer;" title="Activer la lecture balance (off par défaut)">
+        </span>
+        <span id="scaleConn" style="font-size:0.9em;">⚪ off</span>
       </div>
       <div id="scaleReadout" style="font-family:monospace;font-size:2em;color:var(--c-success);text-align:center;font-weight:bold;background:var(--c-input-bg);border-radius:4px;padding:8px;border:1px solid var(--c-border);">—</div>
       <div id="scaleMeta" style="font-family:monospace;font-size:0.7em;color:var(--c-text-muted);margin-top:4px;text-align:right;">—</div>
@@ -226,6 +228,9 @@ canvas, img { image-rendering: var(--img-rendering, pixelated); }
 </div>
 
 <div id="palettePreview" class="palette-preview"></div>
+
+
+
 <div id="gallery" class="gallery"></div>
 <p class="info" id="footerInfo"></p>
 
@@ -455,13 +460,15 @@ let ALL_PALETTES = {}; // name → [[r,g,b], ...] (256 each)
 async function initOnnx() {
   const t0 = performance.now();
   ort.env.wasm.numThreads = 1;
-  // Try WebGPU first (Chrome/Edge/Safari + Firefox-with-flags).
-  // We capture WebGPU validation errors via device.onuncapturederror because
-  // they don't propagate as JS exceptions — if any fire during init, we drop
-  // the GPU session and use WASM.
+  // Default to WASM. The WebGPU EP in onnxruntime-web 1.24 + Firefox 150 has
+  // a Conv2DMatMul/Resize bind-group bug that fires on real latents but NOT
+  // on the smoke test's zero-filled dummy — so the smoke test passed and the
+  // page silently produced all-black output. Until ORT 1.25 / Firefox 151
+  // ship the upstream fix, opt back in with ?webgpu=1 in the URL.
+  const wantWebGPU = new URLSearchParams(location.search).has('webgpu');
   let provider = 'wasm';
   try {
-    if (navigator.gpu && await navigator.gpu.requestAdapter()) {
+    if (wantWebGPU && navigator.gpu && await navigator.gpu.requestAdapter()) {
       const adapter = await navigator.gpu.requestAdapter();
       const device = await adapter.requestDevice();
       let webgpuValid = true;
@@ -1131,9 +1138,34 @@ async function pollScale() {
   }
 }
 
-function setupScaleReader() {
+// Scale polling — off by default (no GUI without user opt-in).
+// Persists in localStorage so the choice sticks across reloads.
+let __scalePollHandle = null;
+function startScalePolling() {
+  if (__scalePollHandle) return;
   pollScale();
-  setInterval(pollScale, 250);  // 4 Hz, plenty for a scale that updates ~5 Hz
+  __scalePollHandle = setInterval(pollScale, 250);  // 4 Hz, scale ~5 Hz native
+}
+function stopScalePolling() {
+  if (__scalePollHandle) { clearInterval(__scalePollHandle); __scalePollHandle = null; }
+  document.getElementById('scaleConn').textContent = '⚪ off';
+  document.getElementById('scaleConn').style.color = 'var(--c-text-muted)';
+  document.getElementById('scaleReadout').textContent = '—';
+  document.getElementById('scaleMeta').textContent = '—';
+}
+window.toggleScale = function() {
+  const cb = document.getElementById('scaleEnabled');
+  localStorage.setItem('scaleEnabled', cb.checked ? '1' : '0');
+  if (cb.checked) startScalePolling();
+  else stopScalePolling();
+};
+function setupScaleReader() {
+  // Restore persisted preference (default OFF)
+  const enabled = localStorage.getItem('scaleEnabled') === '1';
+  const cb = document.getElementById('scaleEnabled');
+  if (cb) cb.checked = enabled;
+  if (enabled) startScalePolling();
+  else stopScalePolling();
 }
 
 async function setupHelper() {
@@ -1264,11 +1296,23 @@ function renderIndices(canvas, indices, w, h, displaySize) {
     canvas.style.width = displaySize + 'px';
     canvas.style.height = displaySize + 'px';
   }
-  // Prefer WebGPU if globally available
+  // WebGPU first (zero-copy palette texture lookup)
   if (GPU && renderIndicesGPU(canvas, indices, w, h)) return;
-  // Universal fallback (Firefox stable Linux, etc)
+  // WebGL2 — universal modern fallback
   if (renderIndicesGL2(canvas, indices, w, h)) return;
-  throw new Error('No GPU renderer available — WebGPU and WebGL2 both failed for ' + (canvas.id || '<anon>'));
+  // canvas2D — final fallback for any browser without GPU. Slower (per-pixel
+  // JS loop) but always works. PALETTE comes from demo_data.json.
+  const ctx = canvas.getContext('2d');
+  if (!ctx || !PALETTE) throw new Error('canvas2D fallback failed: ctx=' + !!ctx + ' palette=' + !!PALETTE);
+  const img = ctx.createImageData(w, h);
+  for (let i = 0; i < indices.length; i++) {
+    const [r, g, b] = PALETTE[indices[i] % PALETTE.length];
+    img.data[i * 4]     = r;
+    img.data[i * 4 + 1] = g;
+    img.data[i * 4 + 2] = b;
+    img.data[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
 }
 
 // Kept for callers that already have ImageData (no indices available).
@@ -1300,7 +1344,7 @@ const decodedIndicesCache = {};
 // ============================================================
 // Same hash + same model version → ONNX produces the same output. Persist
 // the decoded indices so 2nd+ page loads skip ONNX entirely.
-const IDB_DB = 'redstars-demo';
+const IDB_DB = 'redstars-demo-v4';  // bumped to bust stale indices from prior model versions
 const IDB_STORE = 'decoded';
 let _idb = null;
 function openIDB() {
@@ -1423,6 +1467,13 @@ window._USE_LIVE_ONNX = true
  */
 async function batchDecodeMissing() {
   if (!session) return new Map()
+  // Batch decode produces a (B, 256, 256, 256) tensor = ~67 MB per image.
+  // On WASM EP with B=8, that's ~536 MB of Float32 — tends to OOM or
+  // allocation-fail. Only batch when ORT is on WebGPU EP (memory lives on
+  // GPU, much more headroom). Otherwise fall through to per-card decode.
+  if (window.__ORT_PROVIDER !== 'webgpu') {
+    throw new Error('batch decode disabled on WASM EP (memory limit) — using per-card path');
+  }
   // Collect items that aren't already cached (in-memory or IDB).
   const queue = [];
   for (let i = 0; i < DATA.items.length; i++) {
@@ -1945,7 +1996,7 @@ async function pocDecode() {
 }
 </script>
 <!-- ============= Frame profiler HUD (toggle: F2) ============= -->
-<div id="profHUD" style="position:fixed;bottom:8px;right:8px;width:280px;background:var(--c-panel);border:1px solid var(--c-border);border-radius:8px;padding:10px 12px;font-family:monospace;font-size:0.7em;color:var(--c-text-dim);z-index:999;display:none;line-height:1.45;">
+<div id="profHUD" style="position:fixed;bottom:8px;right:8px;width:600px;max-height:90vh;overflow-y:auto;background:var(--c-panel);border:1px solid var(--c-border);border-radius:8px;padding:10px 12px;font-family:monospace;font-size:0.7em;color:var(--c-text-dim);z-index:999;display:none;line-height:1.45;">
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
     <span style="color:var(--c-accent);font-weight:bold;">⏱ Frame profiler</span>
     <span style="color:var(--c-text-muted);font-size:0.85em;">F2 to toggle</span>
@@ -1959,16 +2010,19 @@ async function pocDecode() {
   <div style="display:flex;justify-content:space-between;font-size:0.75em;color:var(--c-text-muted);margin-top:2px;">
     <span>0</span><span>16ms (60fps)</span><span>33ms</span>
   </div>
-  <div id="profEvents" style="margin-top:8px;border-top:1px solid var(--c-border);padding-top:6px;max-height:140px;overflow-y:auto;">
-    <div style="color:var(--c-text-muted);font-style:italic;">no events captured yet</div>
-  </div>
+  <div id="profSteps" style="margin-top:8px;border-top:1px solid var(--c-border);padding-top:6px;max-height:280px;overflow-y:auto;font-family:monospace;font-size:0.74em;"></div>
+  <div style="margin-top:8px;border-top:1px solid var(--c-border);padding-top:6px;font-family:monospace;font-size:0.7em;color:var(--c-text-muted);">Gantt (last 10s)</div>
+  <canvas id="profGantt" width="560" height="120" style="background:var(--c-input-bg);border-radius:3px;width:100%;height:120px;margin-top:4px;"></canvas>
 </div>
 <script>
 // ============================================================
-// Frame profiler — game-engine style live perf HUD
+// Frame profiler — Gantt + per-step device/technique/memory HUD
 // ============================================================
-// Tracks rAF frame times + auto-instruments named operations via
-// performance.measure(). Toggle with F2.
+// Tracks rAF frame times + auto-instruments key pipeline functions.
+// Each step is classified by device (CPU/GPU/net), technique (WASM,
+// WebGPU compute, WebGL2 fragment, JS loop) and approximate memory
+// footprint, then rendered as a sortable table + Gantt timeline.
+// Toggle with F2.
 
 (function setupProfiler() {
   const HUD = document.getElementById('profHUD');
@@ -1976,54 +2030,87 @@ async function pocDecode() {
   const lastEl = document.getElementById('profFrameMs');
   const p99El = document.getElementById('profP99');
   const graphCanvas = document.getElementById('profGraph');
-  const events = document.getElementById('profEvents');
+  const stepsEl = document.getElementById('profSteps');
+  const ganttCanvas = document.getElementById('profGantt');
 
   // Frame ring buffer (last 128 frames)
   const N = 128;
   const frames = new Float32Array(N).fill(16);
   let frameIdx = 0, lastT = performance.now();
 
-  // Operation log (recent named events)
-  const logBuf = [];
-  function logEvent(name, ms, kind = 'op') {
-    logBuf.unshift({ name, ms, kind, t: Date.now() });
-    logBuf.length = Math.min(logBuf.length, 40);
+  // Step metadata — maps step name → { device, tech, mem }
+  // Resolved by prefix match on the recorded label.
+  function classifyStep(name) {
+    const p = (window.__ORT_PROVIDER || 'wasm');
+    const r = (window.__GPU_RENDERER === 'unavailable') ? 'canvas2d' : (window.GPU ? 'webgpu' : 'webgl2');
+    if (/^init-?onnx|^onnx-?init/i.test(name)) return { device:'CPU',  tech:`WASM (ORT ${p})`,           mem:'4.2 MB',  cat:'init' };
+    if (/^init-?gpu/i.test(name))               return { device:'GPU',  tech:'WebGPU device + pipelines',  mem:'~1 KB',   cat:'init' };
+    if (/^fetch/i.test(name))                   return { device:'net',  tech:'HTTP',                        mem:'varies',  cat:'fetch' };
+    if (/decode|onnx/i.test(name)) {
+      const tech = p === 'webgpu' ? 'WebGPU EP' : 'WASM EP';
+      return { device: p === 'webgpu' ? 'GPU' : 'CPU', tech, mem: '67 MB logits', cat:'decode' };
+    }
+    if (/argmax/i.test(name))                   return { device:'GPU',  tech:'WGSL compute shader',         mem:'~64 KB',  cat:'argmax' };
+    if (/render.*card|render.*gallery/i.test(name)) return { device:'mixed', tech:`${r} per canvas`,        mem:'~64 KB',  cat:'render' };
+    if (/render(?!-card)/i.test(name))          return { device: r === 'canvas2d' ? 'CPU' : 'GPU', tech:r,  mem:'~64 KB',  cat:'render' };
+    if (/palette|theme/i.test(name))            return { device:'GPU',  tech:'palette texture upload',      mem:'1 KB',    cat:'palette' };
+    if (/scale|usb/i.test(name))                return { device:'net',  tech:'HTTP poll',                   mem:'small',   cat:'fetch' };
+    if (/long.?task/i.test(name))               return { device:'CPU',  tech:'main-thread block',           mem:'-',       cat:'spike' };
+    return { device:'?', tech:'?', mem:'?', cat:'op' };
+  }
+  function catColor(cat) {
+    return cat === 'spike'   ? '#e94560'
+         : cat === 'decode'  ? '#e9a560'
+         : cat === 'fetch'   ? '#5ba9ed'
+         : cat === 'argmax'  ? '#a78bfa'
+         : cat === 'render'  ? '#4ade80'
+         : cat === 'palette' ? '#f0c674'
+         : cat === 'init'    ? '#9ca3af'
+         : 'var(--c-accent)';
   }
 
-  // Wrap performance.mark/measure so we capture named operations.
-  // The page already calls these in some places; we also auto-instrument.
+  // Step log — each entry { name, ms, t_start, t_end, ...classifyStep }
+  const stepLog = [];
+  function logStep(name, ms) {
+    if (ms <= 0.5) return;
+    const meta = classifyStep(name);
+    stepLog.push({ name, ms, t_end: performance.now(), ...meta });
+    // Keep last 200
+    if (stepLog.length > 200) stepLog.shift();
+  }
+
+  // Wrap performance.measure so we capture named operations.
   const _measure = performance.measure.bind(performance);
   performance.measure = function(name, opts, end) {
     const r = _measure(name, opts, end);
     const entry = performance.getEntriesByName(name).slice(-1)[0];
-    if (entry && entry.duration > 0) {
-      logEvent(name, entry.duration);
-    }
+    if (entry && entry.duration > 0) logStep(name, entry.duration);
     return r;
   };
 
-  // Auto-instrument key functions on the page.
-  const wrap = (obj, fn, label, kind = 'op') => {
+  // Auto-instrument key pipeline functions.
+  const wrap = (obj, fn, label) => {
     const orig = obj[fn];
     if (!orig) return;
     obj[fn] = async function(...args) {
       const t0 = performance.now();
-      try {
-        return await orig.apply(this, args);
-      } finally {
-        const dt = performance.now() - t0;
-        if (dt > 0.5) logEvent(label, dt, kind);
-      }
+      try { return await orig.apply(this, args); }
+      finally { logStep(label, performance.now() - t0); }
     };
   };
-  // Attach when the symbols become available (init runs after this script).
   setTimeout(() => {
-    if (typeof renderCard === 'function')   wrap(window, 'renderCard',   'render card');
-    if (typeof decodeLatent === 'function') wrap(window, 'decodeLatent', 'ONNX decode',  'decode');
-    if (typeof refreshUsbPanel === 'function') wrap(window, 'refreshUsbPanel', 'USB poll', 'fetch');
-    if (typeof pollScale === 'function')    wrap(window, 'pollScale',    'scale poll',  'fetch');
-    if (typeof applyPaletteTheme === 'function') wrap(window, 'applyPaletteTheme', 'theme css vars');
-    if (typeof renderAllCards === 'function') wrap(window, 'renderAllCards', 'render gallery');
+    if (typeof initOnnx === 'function')         wrap(window, 'initOnnx',         'init-onnx');
+    if (typeof initGPU === 'function')          wrap(window, 'initGPU',          'init-gpu');
+    if (typeof renderCard === 'function')       wrap(window, 'renderCard',       'render card');
+    if (typeof renderAllCards === 'function')   wrap(window, 'renderAllCards',   'render gallery');
+    if (typeof decodeLatent === 'function')     wrap(window, 'decodeLatent',     'ONNX decode');
+    if (typeof argmaxGPU === 'function')        wrap(window, 'argmaxGPU',        'argmax');
+    if (typeof renderIndices === 'function')    wrap(window, 'renderIndices',    'render');
+    if (typeof refreshUsbPanel === 'function')  wrap(window, 'refreshUsbPanel',  'USB poll');
+    if (typeof pollScale === 'function')        wrap(window, 'pollScale',        'scale poll');
+    if (typeof applyPaletteTheme === 'function')wrap(window, 'applyPaletteTheme','palette swap');
+    if (typeof changePalette === 'function')    wrap(window, 'changePalette',    'palette swap');
+    if (typeof batchDecodeMissing === 'function') wrap(window, 'batchDecodeMissing', 'batch decode');
   }, 100);
 
   // PerformanceObserver — long tasks (>50 ms) flagged as spikes.
@@ -2031,7 +2118,7 @@ async function pocDecode() {
     try {
       new PerformanceObserver(list => {
         for (const e of list.getEntries()) {
-          if (e.duration > 50) logEvent('LONG TASK ' + e.name, e.duration, 'spike');
+          if (e.duration > 50) logStep('LONG TASK', e.duration);
         }
       }).observe({ entryTypes: ['longtask'] });
     } catch {}
@@ -2045,7 +2132,7 @@ async function pocDecode() {
     frameIdx = (frameIdx + 1) % N;
 
     if (HUD.style.display !== 'none') {
-      // FPS = 1000 / mean(last 30 frames)
+      // FPS / last / p99
       let sum30 = 0;
       for (let i = 0; i < 30; i++) sum30 += frames[(frameIdx - 1 - i + N) % N];
       const fps = 1000 / (sum30 / 30);
@@ -2055,10 +2142,9 @@ async function pocDecode() {
       const sorted = [...frames].sort((a, b) => a - b);
       p99El.textContent = sorted[Math.floor(N * 0.99)].toFixed(1) + ' ms';
 
-      // Frame graph — bars colored by frame budget (green=60fps, orange=30, red>33ms)
+      // Frame graph
       const ctx = graphCanvas.getContext('2d');
       ctx.clearRect(0, 0, 256, 48);
-      // 16ms reference line
       ctx.fillStyle = 'rgba(255,255,255,0.07)';
       ctx.fillRect(0, 48 - (16 / 33) * 48, 256, 1);
       ctx.fillRect(0, 48 - 48, 256, 1);
@@ -2070,23 +2156,60 @@ async function pocDecode() {
         ctx.fillRect(i * W, 48 - h, Math.max(1, W - 0.5), h);
       }
 
-      // Events log — recent named ops
-      if (logBuf.length === 0) {
-        events.innerHTML = '<div style="color:var(--c-text-muted);font-style:italic;">no events yet</div>';
+      // Step table — last 12 steps with device/technique/memory/time
+      if (stepLog.length === 0) {
+        stepsEl.innerHTML = '<div style="color:var(--c-text-muted);font-style:italic;">no steps yet — load gallery or swap palette</div>';
       } else {
-        const now = Date.now();
-        events.innerHTML = logBuf.slice(0, 12).map(e => {
-          const age = ((now - e.t) / 1000).toFixed(1);
-          const color = e.kind === 'spike' ? 'var(--c-error)'
-                      : e.kind === 'decode' ? 'var(--c-warning)'
-                      : e.kind === 'fetch' ? 'var(--c-info)'
-                      : 'var(--c-accent)';
-          return `<div style="display:flex;justify-content:space-between;gap:8px;">
-            <span style="color:${color};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${e.name}</span>
-            <span style="color:var(--c-text-muted);">${e.ms.toFixed(1)}ms · ${age}s</span>
-          </div>`;
-        }).join('');
+        let html = '<table style="width:100%;border-collapse:collapse;">';
+        html += '<tr style="color:var(--c-text-muted);font-size:0.9em;">'
+              + '<th align="left">step</th><th align="left">dev</th><th align="left">tech</th>'
+              + '<th align="right">mem</th><th align="right">ms</th></tr>';
+        const recent = stepLog.slice(-14).reverse();
+        for (const e of recent) {
+          html += `<tr style="border-top:1px solid rgba(255,255,255,0.04);">
+            <td style="padding:2px 4px;color:${catColor(e.cat)};white-space:nowrap;">${e.name}</td>
+            <td style="padding:2px 4px;color:var(--c-text-dim);">${e.device}</td>
+            <td style="padding:2px 4px;color:var(--c-text-muted);white-space:nowrap;">${e.tech}</td>
+            <td style="padding:2px 4px;color:var(--c-text-muted);text-align:right;white-space:nowrap;">${e.mem}</td>
+            <td style="padding:2px 4px;color:var(--c-text);text-align:right;">${e.ms.toFixed(1)}</td>
+          </tr>`;
+        }
+        html += '</table>';
+        stepsEl.innerHTML = html;
       }
+
+      // Gantt timeline — last 10 seconds, one row per category
+      const gctx = ganttCanvas.getContext('2d');
+      const Gw = 560, Gh = 120;
+      gctx.clearRect(0, 0, Gw, Gh);
+      const now = performance.now();
+      const windowMs = 10000;
+      const cats = ['init', 'fetch', 'decode', 'argmax', 'render', 'palette', 'spike'];
+      const rowH = Gh / cats.length;
+      // Row labels + grid
+      gctx.font = '10px monospace';
+      cats.forEach((cat, i) => {
+        gctx.fillStyle = 'rgba(255,255,255,0.04)';
+        gctx.fillRect(0, i * rowH, Gw, rowH - 1);
+        gctx.fillStyle = catColor(cat);
+        gctx.fillText(cat, 4, i * rowH + 11);
+      });
+      // Bars
+      for (const e of stepLog) {
+        const t_start = e.t_end - e.ms;
+        if (now - t_start > windowMs) continue;
+        const rowIdx = cats.indexOf(e.cat);
+        if (rowIdx < 0) continue;
+        const x0 = ((t_start - (now - windowMs)) / windowMs) * Gw;
+        const x1 = ((e.t_end - (now - windowMs)) / windowMs) * Gw;
+        gctx.fillStyle = catColor(e.cat);
+        gctx.fillRect(Math.max(0, x0), rowIdx * rowH + 2, Math.max(1, x1 - x0), rowH - 4);
+      }
+      // Time axis
+      gctx.fillStyle = 'var(--c-text-muted)';
+      gctx.fillStyle = 'rgba(255,255,255,0.4)';
+      gctx.fillText('-10s', 4, Gh - 2);
+      gctx.fillText('now', Gw - 25, Gh - 2);
     }
     requestAnimationFrame(tick);
   }
@@ -2099,8 +2222,6 @@ async function pocDecode() {
       e.preventDefault();
     }
   });
-
-  // Show by default on first load — comment out to start hidden
   HUD.style.display = 'block';
 })();
 </script>
