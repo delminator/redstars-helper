@@ -41,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.7'
+VERSION = '0.5.8'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -705,7 +705,12 @@ class Handler(SimpleHTTPRequestHandler):
         if not self.path.startswith('/helper/'):
             self._json(404, {'error': 'POST only allowed under /helper/*'})
             return
-        ep = self.path[len('/helper'):]
+        # Even POST endpoints can take a `?path=…` style query (e.g.
+        # /helper/redEC?path=…). do_GET parses it the same way ; we
+        # mirror it here so handlers can read `query[...]` uniformly.
+        split = urlsplit(self.path)
+        ep    = split.path[len('/helper'):]
+        query = parse_qs(split.query)
         if ep == '/enable-webgpu':
             profile = find_firefox_default_profile()
             if profile is None:
@@ -945,6 +950,94 @@ class Handler(SimpleHTTPRequestHandler):
                     'n_hashes': n_hashes,
                     'n_distinct': n_distinct,
                     'hashes_hex': hashes_hex,
+                })
+            except Exception as e:
+                self._json(500, {'error': f'{type(e).__name__}: {e}'})
+            return
+
+        if ep == '/redDEC-chain':
+            # Chaîne `level` applications de redDEC pour reconstruire le
+            # fichier d'origine. Niveau N → 1 + 1024 + … + 1024^(N-1)
+            # appels redDEC, sortie 1024^N octets (ré-tronquée par
+            # `size` si fournie). On écrit le résultat dans
+            # ~/.cache/redstars-helper/decoded/, on le monte direct via
+            # un /refs/, et on renvoie le mount au caller — un seul
+            # round-trip côté browser.
+            err = _ensure_codec()
+            if err:
+                self._json(500, {'error': f'codec load failed: {err}', 'hint': 'pip install torch numpy'}); return
+            body = self._read_json()
+            hash_hex = (body.get('hash_hex') or '').strip().lower()
+            level    = int(body.get('level') or 1)
+            name     = (body.get('name') or 'decoded.bin').strip() or 'decoded.bin'
+            target_size = body.get('size')
+            if len(hash_hex) != 2048 or any(c not in '0123456789abcdef' for c in hash_hex):
+                self._json(400, {'error': 'hash_hex must be exactly 2048 hex chars'}); return
+            if level < 1 or level > 4:
+                self._json(400, {'error': 'level must be 1..4'}); return
+            if level > 2:
+                # ~1 M appels neuronaux pour Red3, ~1 G pour Red4. Hors
+                # de portée d'un serveur HTTP synchrone ; on refuse
+                # explicitement plutôt que de bloquer pendant des heures.
+                self._json(501, {
+                    'error': f'Red{level} unsupported pour l\'instant',
+                    'detail': f'{1024**(level-1)} appels redDEC nécessaires — '
+                              'faisable mais demande un job worker dédié, pas '
+                              'une requête HTTP. Red1/Red2 OK.',
+                }); return
+            try:
+                # Chaîne redDEC `level` fois. À chaque étape on découpe
+                # le 1 Mo de sortie en 1024 hashes filles.
+                current = [bytes.fromhex(hash_hex)]
+                for step in range(level):
+                    nxt = []
+                    for h in current:
+                        decoded = _CODEC['redDEC'](h)  # 1 Mo
+                        for i in range(1024):
+                            nxt.append(decoded[i*1024:(i+1)*1024])
+                    current = nxt
+                out_bytes = b''.join(current)
+                if target_size and int(target_size) > 0:
+                    out_bytes = out_bytes[:int(target_size)]
+
+                # Cache + mount.
+                cache_root = Path(os.environ.get('XDG_CACHE_HOME')
+                                  or os.path.expanduser('~/.cache')) / 'redstars-helper' / 'decoded'
+                cache_root.mkdir(parents=True, exist_ok=True)
+                safe = re.sub(r'[^A-Za-z0-9._-]', '_', name)[:120] or 'decoded.bin'
+                out_path = cache_root / f'{hash_hex[:8]}-{safe}'
+                out_path.write_bytes(out_bytes)
+
+                # Monte le fichier décodé via le mécanisme /refs/ pour que
+                # le caller récupère un MountInfo prêt à brancher.
+                REFS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                refs_id  = uuid.uuid4().hex[:12]
+                label    = f'DECODED-Red{level}'
+                dir_path = REFS_CACHE_DIR / f'{label}-{refs_id}'
+                dir_path.mkdir(parents=True, exist_ok=False)
+                link_target = dir_path / out_path.name
+                link_target.symlink_to(out_path)
+                REFS[refs_id] = {
+                    'dir_path': str(dir_path),
+                    'label': label,
+                    'sources': [str(out_path)],
+                    'created_at': time.time(),
+                }
+                self._json(200, {
+                    'ok': True,
+                    'level': level,
+                    'output_path': str(out_path),
+                    'output_size': len(out_bytes),
+                    'id': refs_id,
+                    'mount_path': str(dir_path),
+                    'label': label,
+                    'entries': [{
+                        'name': link_target.name,
+                        'path': str(link_target),
+                        'target': str(out_path),
+                        'size': len(out_bytes),
+                        'is_dir': False,
+                    }],
                 })
             except Exception as e:
                 self._json(500, {'error': f'{type(e).__name__}: {e}'})
