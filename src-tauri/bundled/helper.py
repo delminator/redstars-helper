@@ -41,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.6'
+VERSION = '0.5.7'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -882,15 +882,35 @@ class Handler(SimpleHTTPRequestHandler):
             err = _ensure_codec()
             if err:
                 self._json(500, {'error': f'codec load failed: {err}', 'hint': 'pip install torch numpy'}); return
-            n = int(self.headers.get('Content-Length', '0') or 0)
-            if n <= 0:
-                self._json(400, {'error': 'empty body — POST raw binary as application/octet-stream'}); return
-            raw = self.rfile.read(n)
+            # Two modes :
+            #   - ?path=<absolute path>  → encode an existing file on disk.
+            #     The path MUST sit under one of the active /refs/ mount
+            #     dirs (same guard as /refs/open) so the browser can't
+            #     point us at /etc/anything via a malicious POST.
+            #   - body : raw binary, content-type application/octet-stream.
+            #     Used when the file lives only in the browser.
+            query_path = (query.get('path', ['']) or [''])[0]
             import tempfile
             with tempfile.TemporaryDirectory() as td:
                 in_path  = Path(td) / 'in.bin'
                 out_path = Path(td) / 'out.bin'
-                in_path.write_bytes(raw)
+                if query_path:
+                    src = os.path.normpath(os.path.abspath(query_path))
+                    allowed = False
+                    for info in REFS.values():
+                        mount = os.path.normpath(os.path.abspath(info['dir_path']))
+                        if src == mount or src.startswith(mount + os.sep):
+                            allowed = True; break
+                    if not allowed:
+                        self._json(403, {'error': 'path not under any active /refs/ mount'}); return
+                    if not os.path.isfile(src):
+                        self._json(404, {'error': f'no such file: {src}'}); return
+                    in_path.write_bytes(Path(src).read_bytes())
+                else:
+                    n = int(self.headers.get('Content-Length', '0') or 0)
+                    if n <= 0:
+                        self._json(400, {'error': 'empty body and no ?path= — POST raw binary or use ?path=<refs-file>'}); return
+                    in_path.write_bytes(self.rfile.read(n))
                 try:
                     level, h, in_size = _CODEC['redEC_chain'](in_path, out_path)
                     self._json(200, {
