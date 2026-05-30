@@ -41,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.9'
+VERSION = '0.5.10'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -607,6 +607,24 @@ class Handler(SimpleHTTPRequestHandler):
         if ep == '/status':
             self._json(200, {'ok': True, 'version': VERSION})
             return
+        if ep == '/disk':
+            # Espace dispo sur la partition qui hébergera les sorties.
+            # ?path=<…> ou défaut = le cache redstars-helper (= là où
+            # /redDEC-chain et /refs/ écrivent).
+            target = (query.get('path', ['']) or [''])[0]
+            if not target:
+                target = str(Path(os.environ.get('XDG_CACHE_HOME')
+                                  or os.path.expanduser('~/.cache')) / 'redstars-helper')
+            try:
+                Path(target).mkdir(parents=True, exist_ok=True)
+                usage = shutil.disk_usage(target)
+                self._json(200, {
+                    'ok': True, 'path': target,
+                    'total': usage.total, 'free': usage.free, 'used': usage.used,
+                })
+            except Exception as e:
+                self._json(500, {'error': f'{type(e).__name__}: {e}'})
+            return
         if ep == '/scale':
             state = SCALE.get()
             if state.get('updated_at'):
@@ -997,6 +1015,24 @@ class Handler(SimpleHTTPRequestHandler):
                               'une requête HTTP. Red1/Red2 OK.',
                 }); return
             try:
+                # Pré-check : la sortie après `level` étapes redDEC contient
+                # 1024^level hashes × 1024 octets = 1024^(level+1) octets.
+                # Red1 = 1 Mio, Red2 = 1 Gio, Red3 = 1 Tio, Red4 = 1 Pio.
+                # Si on n'a clairement pas la place sur le disque cible,
+                # on refuse avant de lancer 1k+ appels neuronaux.
+                expected_out = 1024 ** (level + 1)
+                cache_root = Path(os.environ.get('XDG_CACHE_HOME')
+                                  or os.path.expanduser('~/.cache')) / 'redstars-helper' / 'decoded'
+                cache_root.mkdir(parents=True, exist_ok=True)
+                free = shutil.disk_usage(cache_root).free
+                # Marge de 10 % pour ne pas saturer la partition.
+                if free < int(expected_out * 1.1):
+                    self._json(507, {
+                        'error': 'not enough free disk',
+                        'expected_output_bytes': expected_out,
+                        'free_bytes': free,
+                        'path': str(cache_root),
+                    }); return
                 # Chaîne redDEC `level` fois. À chaque étape on découpe
                 # le 1 Mo de sortie en 1024 hashes filles.
                 current = [bytes.fromhex(hash_hex)]
