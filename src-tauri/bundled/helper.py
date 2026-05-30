@@ -41,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.8'
+VERSION = '0.5.9'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -640,12 +640,23 @@ class Handler(SimpleHTTPRequestHandler):
             return
 
         if ep == '/files/pick':
-            # Picker natif multi-fichiers via zenity/kdialog. Renvoie la liste
-            # des paths choisis sur le disque (sans copier les données).
-            tools = [
-                ['zenity', '--file-selection', '--multiple', '--separator=\n'],
-                ['kdialog', '--multiple', '--getopenfilename', os.path.expanduser('~')],
-            ]
+            # Picker natif multi-fichiers OU multi-dossiers via zenity/kdialog.
+            # Renvoie la liste des paths choisis sur le disque (sans copier
+            # les données).
+            #   ?mode=files (défaut)  → fichiers multi
+            #   ?mode=dirs            → dossiers multi (kdialog : 1 seul)
+            mode = (query.get('mode', ['files']) or ['files'])[0].lower()
+            if mode == 'dirs':
+                tools = [
+                    ['zenity', '--file-selection', '--directory', '--multiple', '--separator=\n'],
+                    ['kdialog', '--getexistingdirectory', os.path.expanduser('~')],
+                ]
+            else:
+                mode = 'files'
+                tools = [
+                    ['zenity', '--file-selection', '--multiple', '--separator=\n'],
+                    ['kdialog', '--multiple', '--getopenfilename', os.path.expanduser('~')],
+                ]
             paths = None
             err = None
             for cmd in tools:
@@ -1093,6 +1104,54 @@ class Handler(SimpleHTTPRequestHandler):
                 'label': label,
                 'entries': entries,
             })
+            return
+
+        if ep == '/refs/add':
+            # Ajoute des symlinks à un mount /refs/ existant — pour pouvoir
+            # cumuler plusieurs sélections (fichiers + dossiers) tant que
+            # le user n'a pas cliqué Clore. La sortie est juste la liste
+            # des entrées ajoutées (le caller les append dans son state).
+            body = self._read_json()
+            refs_id   = body.get('id', '')
+            new_paths = body.get('paths') or []
+            info = REFS.get(refs_id)
+            if not info:
+                self._json(404, {'error': 'unknown id'}); return
+            if not new_paths:
+                self._json(400, {'error': 'paths required'}); return
+            dir_path = Path(info['dir_path'])
+            if not dir_path.is_dir():
+                self._json(500, {'error': 'mount dir disappeared'}); return
+            added = []
+            for p in new_paths:
+                src = Path(p)
+                if not src.exists():
+                    added.append({
+                        'name': src.name, 'path': str(dir_path / src.name),
+                        'target': str(src), 'size': 0, 'is_dir': False, 'missing': True,
+                    })
+                    continue
+                src_res = src.resolve()
+                # Évite les collisions de nom comme dans /refs/mount.
+                base   = src_res.name
+                target = dir_path / base
+                i = 1
+                while target.exists():
+                    stem = src_res.stem; ext = src_res.suffix
+                    target = dir_path / f'{stem}-{i}{ext}'
+                    i += 1
+                try:
+                    target.symlink_to(src_res)
+                    st = src_res.stat()
+                    added.append({
+                        'name': target.name, 'path': str(target),
+                        'target': str(src_res), 'size': st.st_size,
+                        'is_dir': src_res.is_dir(),
+                    })
+                except OSError as e:
+                    self._json(500, {'error': f'symlink failed: {e}', 'path': str(src_res)}); return
+            info['sources'].extend(str(Path(p).resolve()) for p in new_paths)
+            self._json(200, {'ok': True, 'added': added})
             return
 
         if ep == '/refs/open':
