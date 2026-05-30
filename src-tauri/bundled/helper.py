@@ -42,6 +42,47 @@ DEMO_DIR = Path(__file__).resolve().parent
 CERT_FILE = DEMO_DIR / 'cert.pem'
 KEY_FILE = DEMO_DIR / 'key.pem'
 
+# Embedded local.redlinks.fr cert + key (Let's Encrypt). Used as a last
+# resort when the file-on-disk versions aren't reachable — typical after
+# auto-update of helper.py to the OS cache dir, which leaves the bundled
+# certs unreachable. Renew window: see `openssl x509 -enddate -in cert.pem`.
+_EMBEDDED_CERT_B64 = 'LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURqVENDQXhPZ0F3SUJBZ0lTQm9vR1J2SVZYakRWQk05TjVoMm1oSFlpTUFvR0NDcUdTTTQ5QkFNRE1ESXgKQ3pBSkJnTlZCQVlUQWxWVE1SWXdGQVlEVlFRS0V3MU1aWFFuY3lCRmJtTnllWEIwTVFzd0NRWURWUVFERXdKRgpOekFlRncweU5qQTFNRFV4TXpNMU1EUmFGdzB5TmpBNE1ETXhNek0xTUROYU1Cd3hHakFZQmdOVkJBTVRFV3h2ClkyRnNMbkpsWkd4cGJtdHpMbVp5TUZrd0V3WUhLb1pJemowQ0FRWUlLb1pJemowREFRY0RRZ0FFZjVUWmdDZXUKYUpzcUxlZ3NjZGQ3VlpmZW5FWmhqeHJZazVtTEh0Z1F6bkRucFRINTUwTEJhNFVYeHFJc0ZYcVk2OGxqSkRmegpSYlhPb1Y0MlNNTDdwNk9DQWgwd2dnSVpNQTRHQTFVZER3RUIvd1FFQXdJSGdEQVRCZ05WSFNVRUREQUtCZ2dyCkJnRUZCUWNEQVRBTUJnTlZIUk1CQWY4RUFqQUFNQjBHQTFVZERnUVdCQlNzSXBIYlNSVytOSXRHNlVHbVV0NXMKQVMzS2pqQWZCZ05WSFNNRUdEQVdnQlN1U0o3Y2h4MUVvRy9hb3VWZ2RBUjR3cHdBZ0RBeUJnZ3JCZ0VGQlFjQgpBUVFtTUNRd0lnWUlLd1lCQlFVSE1BS0dGbWgwZEhBNkx5OWxOeTVwTG14bGJtTnlMbTl5Wnk4d0hBWURWUjBSCkJCVXdFNElSYkc5allXd3VjbVZrYkdsdWEzTXVabkl3RXdZRFZSMGdCQXd3Q2pBSUJnWm5nUXdCQWdFd0xRWUQKVlIwZkJDWXdKREFpb0NDZ0hvWWNhSFIwY0RvdkwyVTNMbU11YkdWdVkzSXViM0puTHpNMUxtTnliRENDQVF3RwpDaXNHQVFRQjFua0NCQUlFZ2YwRWdmb0ErQUIzQU1JeGZsZEZHYU5GN244NDNyS1FRZXZId2lGYUlyOS8xYld0CmRwclpEbExOQUFBQm5maVBBS1FBQUFRREFFZ3dSZ0loQU41Yml2R012R0tzdVJrR1ZFWkdPSmsxNG1IdmRoMnEKeEQ5czkvc28wS3BmQWlFQWt4eGFQZmZnVElOaHZFWVVOeG9md3NTa2JqZFdRaWFQRFpFQndwekxVd1lBZlFBYQppNTFyRC82L2diUjVPY2JTTVFxRzF0RUMxUEJHNGhnc25lTmZYaVlsN3dBQUFaMzRqd0R0QUFnQUFBVUFEenY4CllnUURBRVl3UkFJZ2FMODhkL0RPQ1Y4RklleklFYis5YkErWWcxWFpINFZwSTdRMHZpdkp1dDBDSUhBcWNtVEMKSksrRDdwckp2cS9ZMzFSMERpZXZCUTN6RGxISG9ka1IxNk16TUFvR0NDcUdTTTQ5QkFNREEyZ0FNR1VDTUNTTApYbHpieTY1YzY3R1BISDFKV2tKY2RDcG13NjU5TWovVDlXZmM5c3QxalUyck5UZk5XR1RXQTF4MG1oaWlrQUl4CkFMUnJESEVxUmxNc2crcWZuSktHZ2NpdHMydzlKUURqS2JndmgxVnNTV3d5N0QwVE5UOWpKbmgxTFBFYjJ0SXYKN0E9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCi0tLS0tQkVHSU4gQ0VSVElGSUNBVEUtLS0tLQpNSUlFVnpDQ0FqK2dBd0lCQWdJUkFLcDE4ZVlyandvaUNXYlRpNy9VdXFFd0RRWUpLb1pJaHZjTkFRRUxCUUF3ClR6RUxNQWtHQTFVRUJoTUNWVk14S1RBbkJnTlZCQW9USUVsdWRHVnlibVYwSUZObFkzVnlhWFI1SUZKbGMyVmgKY21Ob0lFZHliM1Z3TVJVd0V3WURWUVFERXd4SlUxSkhJRkp2YjNRZ1dERXdIaGNOTWpRd016RXpNREF3TURBdwpXaGNOTWpjd016RXlNak0xT1RVNVdqQXlNUXN3Q1FZRFZRUUdFd0pWVXpFV01CUUdBMVVFQ2hNTlRHVjBKM01nClJXNWpjbmx3ZERFTE1Ba0dBMVVFQXhNQ1JUY3dkakFRQmdjcWhrak9QUUlCQmdVcmdRUUFJZ05pQUFSQjZBU1QKQ0ZoL3ZqY3dETUNnUWVyK1Z0cUVrejdKQU51clp4TFArVTlUQ2Vpb0w2c3A1WjhWUnZSYllrNFAxSU5CbWJlZgpRSEpGSEN4Y1NqS213dHZHQldwbC85cmE4SFcwUURzVWFKVzJxT0pxY2VKMFpWRlQzaGJVSGlmQk0vMmpnZmd3CmdmVXdEZ1lEVlIwUEFRSC9CQVFEQWdHR01CMEdBMVVkSlFRV01CUUdDQ3NHQVFVRkJ3TUNCZ2dyQmdFRkJRY0QKQVRBU0JnTlZIUk1CQWY4RUNEQUdBUUgvQWdFQU1CMEdBMVVkRGdRV0JCU3VTSjdjaHgxRW9HL2FvdVZnZEFSNAp3cHdBZ0RBZkJnTlZIU01FR0RBV2dCUjV0Rm5tZTdibDVBRnpnQWlJeUJwWTl1bWJiakF5QmdnckJnRUZCUWNCCkFRUW1NQ1F3SWdZSUt3WUJCUVVITUFLR0ZtaDBkSEE2THk5NE1TNXBMbXhsYm1OeUxtOXlaeTh3RXdZRFZSMGcKQkF3d0NqQUlCZ1puZ1F3QkFnRXdKd1lEVlIwZkJDQXdIakFjb0JxZ0dJWVdhSFIwY0RvdkwzZ3hMbU11YkdWdQpZM0l1YjNKbkx6QU5CZ2txaGtpRzl3MEJBUXNGQUFPQ0FnRUFqeDY2ZkRkTGs1eXdGbjNDekExdzFxZnlsSFVECmFFZjBRWnBYY0pzZWRkSkdTZmJVVU92Yk5SOU4vUVExNksxbFhsNFZGeWhtR1hEVDVLZGZjcjBSdklJVnJOeEYKaDRscUh0UlJDUDZSQlJzdHFiWjJ6VVJncWFrbi9YaXAwaWFRTDBJZGZIQlpyMzk2Rmdrbm5pUllGY2tLT1JQRwp5TTNRS25kNjZndE1zdDhJNW5rUlFsQWcvSmIrR2MzZWdJdnVHS1dib0UxRzg5TlRzTjlMVEREM1BMajBkVU1yCk9JdXFWakxCOHBFQzZ5azllbnJscnFqWFFna0xFWWhYenE3ZExhZnY1VmtpZzZHbDBudXVxanFmcDBRMWJpMW8KeVZOQWxYZTZhVVh3OTJDY2doQzliTnNLRU8xK001MllZNStvZklYbFMvU0VRYnZWWVlCTFo1eWVpZ2xWNnQzUwpNNkgrdlRHMGFQOVlIekxuL0tWT0h6R1FmWERQN3FNNXRrZis3ZGlaZTdvMmZ3Nk83SXZONmZzUVhFUVFqOFRKClVYSnh2Mi91SmhjdXkvdFNEZ1h3SE04VWszNFdOYlJUN3pHVEdrUVJYMGdzYmpBZWEvallBb1d2MFp2UVJ3cHEKUGU3OUQvaTdDZXA4cVduQSs3QUUvM0IzUy8zZEVFWW1jMGxwZTEzNjZBLzZHRWdrM2t0cjlQRW9RckxDaHM2SQp0dTN3bk5MQjJldUM4SUtHTFFGcEd0T08vMi9oaUFLanlhamFCUDI1dzFqRjBXbDhCYnFuZTN1WjJxMUd5UEZKCllSbVQ3L09YcG1PSC9GVkx0d1MrOG5nMWNBbXBDdWpQd3RlSlpOY0RHMHNGMm4vc2MwK1NRZjQ5ZmR5VUswdHkKK1ZVd0ZqOXRtV3h5Ui9NPQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg=='
+_EMBEDDED_KEY_B64 = 'LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JR0hBZ0VBTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEJHMHdhd0lCQVFRZzFsU1V0bURxci9UbnhkZ3QKT3dnTDVnaTZYZ1Z0N05hUzJXdDZNZEREaGF1aFJBTkNBQVIvbE5tQUo2NW9teW90NkN4eDEzdFZsOTZjUm1HUApHdGlUbVlzZTJCRE9jT2VsTWZublFzRnJoUmZHb2l3VmVwanJ5V01rTi9ORnRjNmhYalpJd3Z1bgotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg=='
+
+
+def _resolve_cert_paths():
+    """Find usable cert.pem + key.pem on disk; fall back to materializing
+    the embedded copy in a tmp dir. Resolution order:
+      1. DEMO_DIR (where helper.py is currently running from)
+      2. $REDSTARS_HELPER_BUNDLED_DIR (passed by the Tauri shell if it
+         knows the bundle path; absent on auto-update runs)
+      3. embedded fallback → /tmp/redstars-helper-certs/
+    Returns (cert_path, key_path) or (None, None) if even the embed
+    write fails."""
+    import tempfile as _tf
+    candidates = [DEMO_DIR]
+    bundled = os.environ.get('REDSTARS_HELPER_BUNDLED_DIR')
+    if bundled:
+        candidates.append(Path(bundled))
+    for d in candidates:
+        c = d / 'cert.pem'
+        k = d / 'key.pem'
+        if c.is_file() and k.is_file():
+            return c, k
+    try:
+        tmp = Path(_tf.gettempdir()) / 'redstars-helper-certs'
+        tmp.mkdir(exist_ok=True)
+        c = tmp / 'cert.pem'
+        k = tmp / 'key.pem'
+        c.write_bytes(base64.b64decode(_EMBEDDED_CERT_B64))
+        k.write_bytes(base64.b64decode(_EMBEDDED_KEY_B64))
+        try: os.chmod(k, 0o600)
+        except OSError: pass
+        return c, k
+    except Exception as e:
+        print(f'  HTTPS: failed to materialize embedded certs: {e}')
+        return None, None
+
 # Origins allowed to call /helper/* across origins (HTTPS dashboard reaching
 # https://local.redlinks.fr:8443/helper/* needs CORS to consent).
 ALLOWED_ORIGINS = {
@@ -644,9 +685,10 @@ def main():
     # mixed-content blocks. local.redlinks.fr is a public DNS A record
     # pointing at 127.0.0.1; the cert is from Let's Encrypt DNS-01.
     https_thread = None
-    if CERT_FILE.exists() and KEY_FILE.exists():
+    cert_path, key_path = _resolve_cert_paths()
+    if cert_path and key_path and cert_path.is_file() and key_path.is_file():
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(certfile=str(CERT_FILE), keyfile=str(KEY_FILE))
+        ctx.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
         # Bind 127.0.0.1 only — the cert is for local.redlinks.fr which always
         # resolves to 127.0.0.1, and we don't want to expose the helper to LAN
         # over HTTPS (the cert/key would let any LAN box impersonate us).
@@ -656,7 +698,7 @@ def main():
         https_thread = threading.Thread(target=_serve_thread, args=(https_srv, 'HTTPS'), daemon=True)
         https_thread.start()
     else:
-        print(f'  HTTPS: skipped — missing {CERT_FILE.name} / {KEY_FILE.name}')
+        print('  HTTPS: skipped — no cert.pem/key.pem on disk and embedded fallback failed')
     try:
         http_srv.serve_forever()
     except KeyboardInterrupt:

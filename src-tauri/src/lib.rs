@@ -10,7 +10,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, State, WindowEvent};
 use tauri_plugin_opener::OpenerExt;
 
-const HELPER_URL: &str = "http://localhost:8080/";
+const HELPER_URL: &str = "http://localhost:49080/";
 
 struct HelperProc(Mutex<Option<Child>>);
 
@@ -113,7 +113,7 @@ pub fn run() {
             let _tray = TrayIconBuilder::new()
                 .menu(&menu)
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("Redstars Helper — http://localhost:8080")
+                .tooltip("Redstars Helper — http://localhost:49080")
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "open" => { let _ = app.opener().open_url(HELPER_URL, None::<&str>); }
                     "restart" => {
