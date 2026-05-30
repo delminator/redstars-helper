@@ -24,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:9999 http://localhost:9999 https://esm.sh https://github.com",
+      "csp": "default-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:49080 https://local.redlinks.fr:49443 http://localhost:9999 https://local.redlinks.fr:8443 https://esm.sh https://github.com",
       "capabilities": ["default"]
     }
   },
@@ -50,7 +50,14 @@
       "bundled/encoder.onnx",
       "bundled/demo_data.json",
       "bundled/cert.pem",
-      "bundled/key.pem"
+      "bundled/key.pem",
+      "bundled/redEC.py",
+      "bundled/redDEC.py",
+      "bundled/train_elim.py",
+      "bundled/reorg_codec.py",
+      "bundled/final/solo_champion.pth",
+      "bundled/final/solo_champion_img.pth",
+      "bundled/final/solo_champion_latent.pth"
     ],
     "linux": {
       "deb": {

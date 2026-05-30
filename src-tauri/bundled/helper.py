@@ -11,26 +11,33 @@ Endpoints (all under /helper):
   GET  /helper/scale          →  latest scale reading (cached)
   POST /helper/enable-webgpu  →  appends WebGPU prefs to Firefox user.js
   POST /helper/reset-webgpu   →  removes WebGPU prefs
+  POST /helper/redEC          →  body = binary file ; → {hash_hex, level} (auto Red1..Red4)
+  POST /helper/redDEC         →  body = {"hash_hex": "<2048 chars>"} ; → {hashes_hex[1024], …}
 
 Listens on 0.0.0.0:8080 by default so mobile devices on the same LAN can hit
 the page (and the helper endpoints) via the desktop's IP.
 
 Run: python3 helper.py
 """
+import base64
 import json
 import os
+import platform
 import re
+import shutil
 import socket
 import ssl
 import subprocess
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
+from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.4.0'
-PORT = int(os.environ.get('HELPER_PORT', '9999'))
-HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '8443'))
+VERSION = '0.5.0'
+PORT = int(os.environ.get('HELPER_PORT', '49080'))
+HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
 CERT_FILE = DEMO_DIR / 'cert.pem'
 KEY_FILE = DEMO_DIR / 'key.pem'
@@ -40,9 +47,34 @@ KEY_FILE = DEMO_DIR / 'key.pem'
 ALLOWED_ORIGINS = {
     'https://dev.redstars.redlinks.fr',
     'https://redstars.redlinks.fr',
+    'http://localhost:49080',
+    'https://local.redlinks.fr:49443',
+    # Legacy — kept for older clients during the migration off 9999/8443.
     'http://localhost:9999',
     'https://local.redlinks.fr:8443',
 }
+
+# Codec autoencoder (redEC/redDEC) — chargement paresseux à la 1ʳᵉ requête /helper/redEC ou /redDEC.
+# Permet au helper de démarrer même sans torch/numpy installés ; les routes renvoient une erreur
+# claire si la dépendance manque.
+_CODEC = {'loaded': False, 'redEC_chain': None, 'redDEC': None, 'err': None}
+
+def _ensure_codec():
+    if _CODEC['loaded'] or _CODEC['err']:
+        return _CODEC['err']
+    try:
+        import sys as _sys
+        if str(DEMO_DIR) not in _sys.path:
+            _sys.path.insert(0, str(DEMO_DIR))
+        from redEC import redEC_chain
+        from redDEC import redDEC
+        _CODEC['redEC_chain'] = redEC_chain
+        _CODEC['redDEC'] = redDEC
+        _CODEC['loaded'] = True
+        return None
+    except Exception as e:
+        _CODEC['err'] = f'{type(e).__name__}: {e}'
+        return _CODEC['err']
 
 SCALE_PORT = '/dev/ttyUSB0'
 SCALE_BAUD = 9600
@@ -159,6 +191,133 @@ def parse_lsusb_line(line):
     }
 
 
+# ─── ISO mount/unmount ────────────────────────────────────────────────
+#
+# The dashboard asks the helper to wrap a payload (or nothing) in an
+# ISO 9660 image and mount it on the host using the OS's native loop
+# mechanism — no sudo, no FUSE install required on stock desktops.
+# Unmount cleans up and deletes the temp .iso.
+#
+# Mount mechanism per OS (all userspace):
+#   Linux   → udisksctl loop-setup + udisksctl mount   (Polkit, session)
+#   macOS   → hdiutil attach
+#   Windows → powershell Mount-DiskImage
+
+ISO_CACHE_DIR = Path.home() / '.cache' / 'redstars-helper' / 'iso'
+MOUNTED = {}  # iso_id → {'iso_path','mount_path','dev','label','created_at'}
+
+
+def make_iso(label='REDSTARS', payload=None):
+    """
+    Build an ISO 9660+UDF disc image.
+
+    The `payload` argument is the data-loading hook for the disc:
+      - None              → 100% empty FS (just a labeled, navigable disc)
+      - bytes / bytearray → one file `payload.bin` at the root
+      - dict[str, bytes]  → those named files at the root
+
+    Returns the path to the written .iso. Caller owns its lifecycle.
+    """
+    ISO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    iso_id = uuid.uuid4().hex[:12]
+    iso_path = ISO_CACHE_DIR / f'{iso_id}.iso'
+    src_dir = ISO_CACHE_DIR / f'src-{iso_id}'
+    src_dir.mkdir()
+    try:
+        if isinstance(payload, (bytes, bytearray)):
+            (src_dir / 'payload.bin').write_bytes(bytes(payload))
+        elif isinstance(payload, dict):
+            for name, data in payload.items():
+                safe = Path(str(name)).name  # strip path components
+                if not safe:
+                    continue
+                (src_dir / safe).write_bytes(bytes(data))
+        # else (None) → src_dir stays empty → empty filesystem
+
+        tool = next((t for t in ('xorrisofs', 'genisoimage', 'mkisofs')
+                     if shutil.which(t)), None)
+        if not tool:
+            raise RuntimeError('No ISO tool (install xorriso / genisoimage / mkisofs).')
+        safe_label = (label or 'REDSTARS')[:32].strip() or 'REDSTARS'
+        cmd = [tool, '-iso-level', '3', '-R', '-J', '-no-pad',
+               '-V', safe_label, '-o', str(iso_path), str(src_dir)]
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f'{tool} failed: {r.stderr.strip()[:500]}')
+        return iso_path
+    finally:
+        shutil.rmtree(src_dir, ignore_errors=True)
+
+
+def _run(cmd, check=True):
+    return subprocess.run(cmd, capture_output=True, text=True, check=check)
+
+
+def mount_iso(iso_path):
+    """Mount as the user via the OS-native mechanism. Returns (mount_path, dev)."""
+    sysname = platform.system()
+    if sysname == 'Linux':
+        out = _run(['udisksctl', 'loop-setup', '-f', str(iso_path),
+                    '--no-user-interaction']).stdout.strip()
+        # "Mapped file file.iso as /dev/loop0."
+        dev = out.split()[-1].rstrip('.')
+        m = _run(['udisksctl', 'mount', '-b', dev, '--no-user-interaction']).stdout.strip()
+        # "Mounted /dev/loop0 at /run/media/user/LABEL"
+        mount_path = m.split(' at ', 1)[-1].rstrip('.').strip()
+        return mount_path, dev
+    if sysname == 'Darwin':
+        out = _run(['hdiutil', 'attach', '-nobrowse', str(iso_path)]).stdout.strip()
+        # Last non-empty line: "/dev/disk2   Apple_HFS    /Volumes/REDSTARS"
+        last = [l for l in out.splitlines() if l.strip()][-1]
+        parts = re.split(r'\s{2,}|\t', last.strip())
+        dev = parts[0].strip()
+        mount_path = parts[-1].strip()
+        return mount_path, dev
+    if sysname == 'Windows':
+        ps = (f"$img = Mount-DiskImage -ImagePath '{iso_path}' -PassThru; "
+              "Start-Sleep -Milliseconds 250; "
+              "($img | Get-Volume).DriveLetter")
+        d = _run(['powershell', '-NoProfile', '-Command', ps]).stdout.strip().splitlines()[-1].strip()
+        return f'{d}:\\', str(iso_path)  # dev = iso path (used by Dismount-DiskImage)
+    raise RuntimeError(f'Unsupported OS: {sysname}')
+
+
+def unmount_iso(iso_path, dev):
+    sysname = platform.system()
+    try:
+        if sysname == 'Linux':
+            _run(['udisksctl', 'unmount', '-b', dev, '--no-user-interaction'], check=False)
+            _run(['udisksctl', 'loop-delete', '-b', dev, '--no-user-interaction'], check=False)
+        elif sysname == 'Darwin':
+            _run(['hdiutil', 'detach', dev], check=False)
+        elif sysname == 'Windows':
+            _run(['powershell', '-NoProfile', '-Command',
+                  f"Dismount-DiskImage -ImagePath '{iso_path}'"], check=False)
+    except Exception:
+        pass
+
+
+def list_mount(mount_path):
+    """Lightweight directory listing for the dashboard frame."""
+    out = []
+    try:
+        for name in sorted(os.listdir(mount_path)):
+            full = os.path.join(mount_path, name)
+            try:
+                st = os.stat(full)
+                out.append({
+                    'name': name,
+                    'path': full,
+                    'size': st.st_size,
+                    'is_dir': os.path.isdir(full),
+                })
+            except OSError:
+                continue
+    except FileNotFoundError:
+        pass
+    return out
+
+
 class Handler(SimpleHTTPRequestHandler):
     """Same-origin server: static files + /helper/* API endpoints."""
 
@@ -193,10 +352,21 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _read_json(self):
+        n = int(self.headers.get('Content-Length', '0') or 0)
+        if n <= 0:
+            return {}
+        try:
+            return json.loads(self.rfile.read(n).decode('utf-8'))
+        except Exception:
+            return {}
+
     def do_GET(self):
         if not self.path.startswith('/helper/'):
             return super().do_GET()  # static file serve
-        ep = self.path[len('/helper'):]  # strip prefix → /status, /lsusb, etc.
+        split = urlsplit(self.path)
+        ep = split.path[len('/helper'):]  # strip prefix → /status, /lsusb, etc.
+        query = parse_qs(split.query)
         if ep == '/status':
             self._json(200, {'ok': True, 'version': VERSION})
             return
@@ -218,6 +388,18 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json(500, {'error': 'lsusb not installed'})
             except Exception as e:
                 self._json(500, {'error': type(e).__name__ + ': ' + str(e)})
+            return
+        if ep == '/iso/list':
+            iso_id = (query.get('id', ['']) or [''])[0]
+            info = MOUNTED.get(iso_id)
+            if not info:
+                self._json(404, {'error': 'unknown id'})
+                return
+            self._json(200, {
+                'mount_path': info['mount_path'],
+                'label': info['label'],
+                'entries': list_mount(info['mount_path']),
+            })
             return
         self._json(404, {'error': 'unknown helper endpoint'})
 
@@ -298,6 +480,140 @@ class Handler(SimpleHTTPRequestHandler):
                 'action': ', '.join(actions) or 'nothing to do',
                 'message': 'Close Firefox first, then reopen, for the reset to apply cleanly.',
             })
+            return
+
+        if ep == '/iso/mount':
+            body = self._read_json()
+            label = (body.get('label') or 'REDSTARS')
+            payload = None
+            # Two body shapes accepted:
+            #   {"files": {"name.ext": "<base64>", ...}}   → multi-file ISO
+            #   {"payload": "<base64>"}                    → single payload.bin
+            # `files` wins if both are present.
+            if isinstance(body.get('files'), dict) and body['files']:
+                try:
+                    payload = {name: base64.b64decode(b64)
+                               for name, b64 in body['files'].items()}
+                except Exception as e:
+                    self._json(400, {'error': f'bad base64 in files: {e}'})
+                    return
+            elif body.get('payload'):
+                try:
+                    payload = base64.b64decode(body['payload'])
+                except Exception as e:
+                    self._json(400, {'error': f'bad base64 payload: {e}'})
+                    return
+            try:
+                iso_path = make_iso(label, payload)
+                mount_path, dev = mount_iso(iso_path)
+            except Exception as e:
+                self._json(500, {'error': type(e).__name__ + ': ' + str(e)})
+                return
+            iso_id = uuid.uuid4().hex[:12]
+            MOUNTED[iso_id] = {
+                'iso_path': str(iso_path),
+                'mount_path': mount_path,
+                'dev': dev,
+                'label': label,
+                'created_at': time.time(),
+            }
+            self._json(200, {
+                'id': iso_id,
+                'mount_path': mount_path,
+                'label': label,
+                'entries': list_mount(mount_path),
+            })
+            return
+
+        if ep == '/iso/unmount':
+            body = self._read_json()
+            iso_id = body.get('id')
+            info = MOUNTED.pop(iso_id, None)
+            if not info:
+                self._json(404, {'error': 'unknown id'})
+                return
+            unmount_iso(info['iso_path'], info['dev'])
+            try:
+                os.remove(info['iso_path'])
+            except OSError:
+                pass
+            self._json(200, {'ok': True, 'id': iso_id})
+            return
+
+        if ep == '/iso/open':
+            body = self._read_json()
+            path = body.get('path', '')
+            # Path must sit under a currently-mounted iso (we never open
+            # arbitrary host paths on behalf of the dashboard).
+            if not any(path.startswith(info['mount_path']) for info in MOUNTED.values()):
+                self._json(403, {'error': 'path not in a mounted iso'})
+                return
+            sysname = platform.system()
+            try:
+                if sysname == 'Linux':
+                    subprocess.Popen(['xdg-open', path])
+                elif sysname == 'Darwin':
+                    subprocess.Popen(['open', path])
+                elif sysname == 'Windows':
+                    os.startfile(path)  # type: ignore[attr-defined]
+                else:
+                    self._json(500, {'error': f'open unsupported on {sysname}'})
+                    return
+                self._json(200, {'ok': True})
+            except Exception as e:
+                self._json(500, {'error': type(e).__name__ + ': ' + str(e)})
+            return
+
+        if ep == '/redEC':
+            err = _ensure_codec()
+            if err:
+                self._json(500, {'error': f'codec load failed: {err}', 'hint': 'pip install torch numpy'}); return
+            n = int(self.headers.get('Content-Length', '0') or 0)
+            if n <= 0:
+                self._json(400, {'error': 'empty body — POST raw binary as application/octet-stream'}); return
+            raw = self.rfile.read(n)
+            import tempfile
+            with tempfile.TemporaryDirectory() as td:
+                in_path  = Path(td) / 'in.bin'
+                out_path = Path(td) / 'out.bin'
+                in_path.write_bytes(raw)
+                try:
+                    level, h, in_size = _CODEC['redEC_chain'](in_path, out_path)
+                    self._json(200, {
+                        'ok': True,
+                        'level': f'Red{level}',
+                        'n_chain_steps': level,
+                        'input_bytes': in_size,
+                        'output_hash_hex': h.hex(),
+                        'output_bytes': len(h),
+                    })
+                except Exception as e:
+                    self._json(500, {'error': f'{type(e).__name__}: {e}'})
+            return
+
+        if ep == '/redDEC':
+            err = _ensure_codec()
+            if err:
+                self._json(500, {'error': f'codec load failed: {err}', 'hint': 'pip install torch numpy'}); return
+            body = self._read_json()
+            hash_hex = (body.get('hash_hex') or '').strip().lower()
+            if len(hash_hex) != 2048 or any(c not in '0123456789abcdef' for c in hash_hex):
+                self._json(400, {'error': 'hash_hex must be exactly 2048 hex chars (= 8192 bits = 1 BYTEA)'}); return
+            try:
+                out_bytes  = _CODEC['redDEC'](bytes.fromhex(hash_hex))
+                n_hashes   = len(out_bytes) // 1024
+                hashes_hex = [out_bytes[i*1024:(i+1)*1024].hex() for i in range(n_hashes)]
+                n_distinct = len(set(hashes_hex))
+                self._json(200, {
+                    'ok': True,
+                    'input_hash_hex': hash_hex,
+                    'output_bytes': len(out_bytes),
+                    'n_hashes': n_hashes,
+                    'n_distinct': n_distinct,
+                    'hashes_hex': hashes_hex,
+                })
+            except Exception as e:
+                self._json(500, {'error': f'{type(e).__name__}: {e}'})
             return
 
         self._json(404, {'error': 'unknown helper endpoint'})
