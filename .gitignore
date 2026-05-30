@@ -7,3 +7,10 @@ src-tauri/Cargo.lock
 *.msi
 *.AppImage
 .DS_Store
+
+# Python runtime artifacts left next to the bundled helper.py
+__pycache__/
+*.pyc
+
+# Local-only mockups / scratch assets dropped in bundled/
+src-tauri/bundled/propaganda_mockup.svg
