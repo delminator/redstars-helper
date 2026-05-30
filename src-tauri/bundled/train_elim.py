@@ -15,7 +15,19 @@ import torch, torch.nn as nn, torch.nn.functional as F
 from PIL import Image
 
 ROOT = Path(__file__).parent
-OUT  = ROOT / "output32"; OUT.mkdir(exist_ok=True)
+# Try writing next to the script (dev tree), fall back to the user's
+# cache dir when the bundle lives in a system path like /usr/lib that
+# isn't writable by the helper process.
+import os as _os_for_out
+_OUT_LOCAL = ROOT / "output32"
+try:
+    _OUT_LOCAL.mkdir(exist_ok=True)
+    OUT = _OUT_LOCAL
+except (PermissionError, OSError):
+    OUT = Path(_os_for_out.environ.get('XDG_CACHE_HOME')
+               or _os_for_out.path.expanduser('~/.cache')) \
+          / 'redstars-helper' / 'output32'
+    OUT.mkdir(parents=True, exist_ok=True)
 DEV  = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ===== config =====
