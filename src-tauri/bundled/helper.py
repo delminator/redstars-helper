@@ -13,9 +13,15 @@ Endpoints (all under /helper):
   POST /helper/reset-webgpu   →  removes WebGPU prefs
   POST /helper/redEC          →  body = binary file ; → {hash_hex, level} (auto Red1..Red4)
   POST /helper/redDEC         →  body = {"hash_hex": "<2048 chars>"} ; → {hashes_hex[1024], …}
+  GET  /helper/files/pick     →  picker natif multi-fichiers ; → {paths, entries}
+  POST /helper/refs/mount     →  {paths,label?} ; symlinks dans un tmpdir, no copy → {id,mount_path,entries}
+  POST /helper/refs/open      →  {id,path?} ; xdg-open le tmpdir ou un de ses fichiers
+  POST /helper/refs/unmount   →  {id} ; supprime les symlinks (fichiers cibles intacts)
+  GET  /helper/refs/list?id=  →  {entries} du tmpdir
 
-Listens on 0.0.0.0:8080 by default so mobile devices on the same LAN can hit
-the page (and the helper endpoints) via the desktop's IP.
+Listens on 0.0.0.0:49080 (HTTP) and 0.0.0.0:49443 (HTTPS) by default so mobile
+devices on the same LAN can hit the page (and the helper endpoints) via the
+desktop's IP. Ports are IANA dynamic range — no collision with standard apps.
 
 Run: python3 helper.py
 """
@@ -246,6 +252,12 @@ def parse_lsusb_line(line):
 
 ISO_CACHE_DIR = Path.home() / '.cache' / 'redstars-helper' / 'iso'
 MOUNTED = {}  # iso_id → {'iso_path','mount_path','dev','label','created_at'}
+
+# Refs « par référence » : un répertoire temporaire de symlinks vers des fichiers
+# du disque, partagé avec l'utilisateur via xdg-open. Pas de copie des données,
+# juste des liens symboliques. Cleanup à la demande via /helper/refs/unmount.
+REFS_CACHE_DIR = Path.home() / '.cache' / 'redstars-helper' / 'refs'
+REFS = {}  # refs_id → {'dir_path','label','sources':[...],'created_at'}
 
 
 def make_iso(label='REDSTARS', payload=None):
@@ -626,6 +638,60 @@ class Handler(SimpleHTTPRequestHandler):
                 'entries': list_mount(info['mount_path']),
             })
             return
+
+        if ep == '/files/pick':
+            # Picker natif multi-fichiers via zenity/kdialog. Renvoie la liste
+            # des paths choisis sur le disque (sans copier les données).
+            tools = [
+                ['zenity', '--file-selection', '--multiple', '--separator=\n'],
+                ['kdialog', '--multiple', '--getopenfilename', os.path.expanduser('~')],
+            ]
+            paths = None
+            err = None
+            for cmd in tools:
+                if shutil.which(cmd[0]) is None:
+                    continue
+                try:
+                    out = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+                    if out.returncode != 0:
+                        # User cancelled — return empty list, not an error
+                        paths = []
+                        break
+                    sep = '\n' if cmd[0] == 'zenity' else ' '
+                    paths = [p for p in out.stdout.strip().split(sep) if p]
+                    break
+                except subprocess.TimeoutExpired:
+                    err = f'{cmd[0]} timeout'
+                except Exception as e:
+                    err = f'{type(e).__name__}: {e}'
+            if paths is None:
+                self._json(500, {'error': err or 'no native picker (install zenity or kdialog)'})
+                return
+            # enrichir avec taille + nom pour l'UI
+            entries = []
+            for p in paths:
+                pth = Path(p)
+                try:
+                    st = pth.stat()
+                    entries.append({'name': pth.name, 'path': str(pth), 'size': st.st_size, 'is_dir': pth.is_dir()})
+                except OSError:
+                    entries.append({'name': pth.name, 'path': str(pth), 'size': 0, 'is_dir': False, 'missing': True})
+            self._json(200, {'paths': paths, 'entries': entries})
+            return
+
+        if ep == '/refs/list':
+            refs_id = (query.get('id', ['']) or [''])[0]
+            info = REFS.get(refs_id)
+            if not info:
+                self._json(404, {'error': 'unknown id'}); return
+            self._json(200, {
+                'id': refs_id,
+                'mount_path': info['dir_path'],
+                'label': info['label'],
+                'entries': list_mount(info['dir_path']),
+            })
+            return
+
         self._json(404, {'error': 'unknown helper endpoint'})
 
     def do_HEAD(self):
@@ -862,6 +928,102 @@ class Handler(SimpleHTTPRequestHandler):
                 })
             except Exception as e:
                 self._json(500, {'error': f'{type(e).__name__}: {e}'})
+            return
+
+        if ep == '/refs/mount':
+            body  = self._read_json()
+            paths = body.get('paths') or []
+            label = (body.get('label') or 'REDSTARS').strip() or 'REDSTARS'
+            if not paths:
+                self._json(400, {'error': 'paths required'}); return
+            # valider que chaque path existe AVANT de créer quoi que ce soit
+            missing = [p for p in paths if not Path(p).exists()]
+            if missing:
+                self._json(400, {'error': 'path not found', 'missing': missing}); return
+            REFS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            refs_id = uuid.uuid4().hex[:12]
+            dir_path = REFS_CACHE_DIR / f'{label}-{refs_id}'
+            try:
+                dir_path.mkdir(parents=True, exist_ok=False)
+            except FileExistsError:
+                self._json(500, {'error': 'tmp dir collision'}); return
+            entries = []
+            for p in paths:
+                src = Path(p).resolve()
+                # éviter les collisions de nom : suffixer si nécessaire
+                base = src.name
+                target = dir_path / base
+                i = 1
+                while target.exists():
+                    stem = src.stem; ext = src.suffix
+                    target = dir_path / f'{stem}-{i}{ext}'
+                    i += 1
+                try:
+                    target.symlink_to(src)
+                    st = src.stat()
+                    entries.append({
+                        'name': target.name, 'path': str(target),
+                        'target': str(src), 'size': st.st_size,
+                        'is_dir': src.is_dir(),
+                    })
+                except OSError as e:
+                    self._json(500, {'error': f'symlink failed: {e}', 'path': str(src)}); return
+            REFS[refs_id] = {
+                'dir_path': str(dir_path),
+                'label': label,
+                'sources': [str(Path(p).resolve()) for p in paths],
+                'created_at': time.time(),
+            }
+            self._json(200, {
+                'id': refs_id,
+                'mount_path': str(dir_path),
+                'label': label,
+                'entries': entries,
+            })
+            return
+
+        if ep == '/refs/open':
+            body = self._read_json()
+            refs_id = body.get('id', '')
+            info = REFS.get(refs_id)
+            if not info:
+                self._json(404, {'error': 'unknown id'}); return
+            target = body.get('path') or info['dir_path']
+            # path must sit under the refs dir we created (no arbitrary host paths)
+            if not str(Path(target).resolve()).startswith(str(Path(info['dir_path']).resolve())):
+                self._json(403, {'error': 'path not in refs mount'}); return
+            sysname = platform.system()
+            try:
+                if sysname == 'Linux':
+                    subprocess.Popen(['xdg-open', target])
+                elif sysname == 'Darwin':
+                    subprocess.Popen(['open', target])
+                elif sysname == 'Windows':
+                    os.startfile(target)  # type: ignore[attr-defined]
+                else:
+                    self._json(500, {'error': f'open unsupported on {sysname}'}); return
+                self._json(200, {'ok': True, 'path': target})
+            except Exception as e:
+                self._json(500, {'error': f'{type(e).__name__}: {e}'})
+            return
+
+        if ep == '/refs/unmount':
+            body = self._read_json()
+            refs_id = body.get('id', '')
+            info = REFS.pop(refs_id, None)
+            if not info:
+                self._json(404, {'error': 'unknown id'}); return
+            try:
+                # supprimer les symlinks puis le répertoire ; ne touche pas aux fichiers cibles
+                d = Path(info['dir_path'])
+                if d.exists():
+                    for child in d.iterdir():
+                        try: child.unlink()
+                        except OSError: pass
+                    d.rmdir()
+            except OSError as e:
+                self._json(500, {'error': f'unmount failed: {e}', 'id': refs_id, 'dir': info['dir_path']}); return
+            self._json(200, {'ok': True, 'id': refs_id})
             return
 
         self._json(404, {'error': 'unknown helper endpoint'})
