@@ -41,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.4'
+VERSION = '0.5.5'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -999,17 +999,82 @@ class Handler(SimpleHTTPRequestHandler):
             target_norm = os.path.normpath(os.path.abspath(target))
             if target_norm != mount_norm and not target_norm.startswith(mount_norm + os.sep):
                 self._json(403, {'error': 'path not in refs mount'}); return
+            # Pick the right opener. Symlinks to a directory must land
+            # in a file manager, NOT xdg-open — VSCode/VSCodium and
+            # other editors register themselves as inode/directory
+            # handlers ("Open Folder…"), which hijacks the mount and
+            # the user never sees their files in a real explorer. For
+            # plain files we keep xdg-open: the user's MIME defaults
+            # are their choice (e.g. VSCodium for text/plain is fine).
+            # Pick the opener. For DIRECTORIES we MUST bypass xdg-open
+            # because editors (VSCodium, VSCode, Cursor, IntelliJ, …)
+            # register themselves as `inode/directory` handlers via
+            # their .desktop file ("Open Folder…"), and on many distros
+            # they end up as the default. xdg-open then hands the mount
+            # to the editor and the user never sees it in a real file
+            # manager. For plain FILES we keep xdg-open : the user's
+            # MIME defaults are their choice.
+            #
+            # FILE_MANAGERS_LINUX is intentionally large : every major
+            # FM (GTK/Qt/KDE/MATE/Cinnamon/XFCE/LXQt/UKUI/Deepin/…)
+            # ships a single well-known binary, we try them in order
+            # and pick the first present. Order matters : a user who
+            # has both Thunar and Nautilus installed gets the one that
+            # ships with their session DE (XDG_CURRENT_DESKTOP hint).
+            FILE_MANAGERS_LINUX = [
+                'thunar', 'nautilus', 'dolphin', 'nemo', 'caja',
+                'pcmanfm-qt', 'pcmanfm', 'peony', 'konqueror',
+                'krusader', 'spacefm', 'index.fm', 'qtfm',
+                'dde-file-manager', 'cosmic-files', 'nautilus-desktop',
+                'gnome-files', 'Files',
+            ]
             sysname = platform.system()
             try:
-                if sysname == 'Linux':
-                    subprocess.Popen(['xdg-open', target])
+                is_dir = os.path.isdir(target)  # follows symlinks
+                opener_label = 'xdg'
+                if sysname == 'Linux' or sysname.endswith('BSD'):
+                    cmd = None
+                    if is_dir:
+                        # Bias toward the FM bundled with the current
+                        # session DE so a Thunar+Nautilus box on XFCE
+                        # gets Thunar, on GNOME gets Nautilus, etc.
+                        dt = (os.environ.get('XDG_CURRENT_DESKTOP', '') + ':'
+                              + os.environ.get('XDG_SESSION_DESKTOP', '')).lower()
+                        de_map = {'xfce': 'thunar', 'gnome': 'nautilus',
+                                  'kde': 'dolphin', 'plasma': 'dolphin',
+                                  'mate': 'caja', 'cinnamon': 'nemo',
+                                  'lxqt': 'pcmanfm-qt', 'lxde': 'pcmanfm',
+                                  'ukui': 'peony', 'deepin': 'dde-file-manager',
+                                  'cosmic': 'cosmic-files'}
+                        preferred = next((fm for tok, fm in de_map.items() if tok in dt), None)
+                        order = ([preferred] if preferred else []) + \
+                                [f for f in FILE_MANAGERS_LINUX if f != preferred]
+                        for fm in order:
+                            if shutil.which(fm):
+                                cmd = [fm, target]
+                                opener_label = f'fm:{fm}'
+                                break
+                    if cmd is None:
+                        cmd = ['xdg-open', target]
+                    subprocess.Popen(cmd)
                 elif sysname == 'Darwin':
+                    # macOS `open <dir>` opens Finder on that path.
+                    # No editor hijack issue : Finder always wins for
+                    # bare `open` on directories.
                     subprocess.Popen(['open', target])
+                    opener_label = 'finder' if is_dir else 'xdg'
                 elif sysname == 'Windows':
-                    os.startfile(target)  # type: ignore[attr-defined]
+                    # Windows `explorer.exe <dir>` opens File Explorer.
+                    # os.startfile on a directory normally does the
+                    # same but explicit explorer is more predictable.
+                    if is_dir:
+                        subprocess.Popen(['explorer', target])
+                        opener_label = 'explorer'
+                    else:
+                        os.startfile(target)  # type: ignore[attr-defined]
                 else:
                     self._json(500, {'error': f'open unsupported on {sysname}'}); return
-                self._json(200, {'ok': True, 'path': target})
+                self._json(200, {'ok': True, 'path': target, 'opener': opener_label})
             except Exception as e:
                 self._json(500, {'error': f'{type(e).__name__}: {e}'})
             return
