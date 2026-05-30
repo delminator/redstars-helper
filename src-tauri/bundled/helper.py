@@ -41,7 +41,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.3'
+VERSION = '0.5.4'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -989,8 +989,15 @@ class Handler(SimpleHTTPRequestHandler):
             if not info:
                 self._json(404, {'error': 'unknown id'}); return
             target = body.get('path') or info['dir_path']
-            # path must sit under the refs dir we created (no arbitrary host paths)
-            if not str(Path(target).resolve()).startswith(str(Path(info['dir_path']).resolve())):
+            # Path must sit under the refs dir we created. We use absolute() +
+            # normpath, NOT resolve() — the refs are symlinks pointing OUTSIDE
+            # the tmpdir (their whole purpose). resolve() would follow them
+            # and the check would always fail. We trust the symlinks we wrote
+            # at mount time; what we're guarding against is the caller asking
+            # to open `.../../../etc/passwd` literally, which normpath catches.
+            mount_norm  = os.path.normpath(os.path.abspath(info['dir_path']))
+            target_norm = os.path.normpath(os.path.abspath(target))
+            if target_norm != mount_norm and not target_norm.startswith(mount_norm + os.sep):
                 self._json(403, {'error': 'path not in refs mount'}); return
             sysname = platform.system()
             try:
