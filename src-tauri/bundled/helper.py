@@ -35,7 +35,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.1'
+VERSION = '0.5.2'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -354,15 +354,96 @@ def unmount_iso(iso_path, dev):
 _HELPER_MINISIGN_PUBKEY_B64 = 'RWSLOkiWKfscZzD9cOda4UFFRyOZJh5lu/lZZ56+oxa152FXiNtvuM/b'
 
 
-def _verify_minisign(content, sig_text):
-    """Verify minisign legacy ("Ed") signature against the embedded
-    pubkey. Returns True if valid. Uses `cryptography` if installed,
-    falls back to False (fail-closed) otherwise."""
-    try:
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-    except ImportError:
-        print('[update] cryptography lib not installed — cannot verify signature')
+# Pure-Python Ed25519 verification — embedded so helper.py is fully
+# self-contained (no `pip install cryptography` ever). Only used by the
+# /helper/update path, so a ~1 s verify on CPython is acceptable.
+# Reference: ed25519.cr.yp.to/python/ed25519.py (DJB), trimmed to the
+# verify path and switched to iterative scalarmult.
+import hashlib as _hashlib
+
+_ED_Q = (1 << 255) - 19
+_ED_L = (1 << 252) + 27742317777372353535851937790883648493
+_ED_D = (-121665 * pow(121666, _ED_Q - 2, _ED_Q)) % _ED_Q
+_ED_I = pow(2, (_ED_Q - 1) // 4, _ED_Q)
+
+
+def _ed_xrecover(y):
+    xx = (y * y - 1) * pow(_ED_D * y * y + 1, _ED_Q - 2, _ED_Q)
+    x = pow(xx, (_ED_Q + 3) // 8, _ED_Q)
+    if (x * x - xx) % _ED_Q != 0:
+        x = (x * _ED_I) % _ED_Q
+    if x % 2 != 0:
+        x = _ED_Q - x
+    return x
+
+
+_ED_BY = 4 * pow(5, _ED_Q - 2, _ED_Q) % _ED_Q
+_ED_BX = _ed_xrecover(_ED_BY)
+_ED_B = (_ED_BX % _ED_Q, _ED_BY, 1, (_ED_BX * _ED_BY) % _ED_Q)
+
+
+def _ed_add(P, Q):
+    x1, y1, z1, t1 = P
+    x2, y2, z2, t2 = Q
+    a = (y1 - x1) * (y2 - x2) % _ED_Q
+    b = (y1 + x1) * (y2 + x2) % _ED_Q
+    c = t1 * 2 * _ED_D * t2 % _ED_Q
+    dd = z1 * 2 * z2 % _ED_Q
+    e = (b - a) % _ED_Q
+    f = (dd - c) % _ED_Q
+    g = (dd + c) % _ED_Q
+    h = (b + a) % _ED_Q
+    return (e * f % _ED_Q, g * h % _ED_Q, f * g % _ED_Q, e * h % _ED_Q)
+
+
+def _ed_mult(P, e):
+    R = (0, 1, 1, 0)  # identity (extended Edwards coords)
+    while e > 0:
+        if e & 1:
+            R = _ed_add(R, P)
+        P = _ed_add(P, P)
+        e >>= 1
+    return R
+
+
+def _ed_decode(s):
+    y = int.from_bytes(s, 'little') & ((1 << 255) - 1)
+    x = _ed_xrecover(y)
+    if (x & 1) != ((s[31] >> 7) & 1):
+        x = _ED_Q - x
+    return (x, y, 1, (x * y) % _ED_Q)
+
+
+def _ed_encode(P):
+    x, y, z, _ = P
+    zi = pow(z, _ED_Q - 2, _ED_Q)
+    x = (x * zi) % _ED_Q
+    y = (y * zi) % _ED_Q
+    out = bytearray(y.to_bytes(32, 'little'))
+    out[31] |= (x & 1) << 7
+    return bytes(out)
+
+
+def ed25519_verify(pub32, sig64, msg):
+    """Pure-Python Ed25519 verify. True iff signature is valid."""
+    if len(pub32) != 32 or len(sig64) != 64:
         return False
+    try:
+        R = _ed_decode(sig64[:32])
+        A = _ed_decode(pub32)
+        s = int.from_bytes(sig64[32:], 'little')
+        h = int.from_bytes(_hashlib.sha512(sig64[:32] + pub32 + msg).digest(),
+                           'little') % _ED_L
+        return _ed_encode(_ed_mult(_ED_B, s)) == _ed_encode(_ed_add(R, _ed_mult(A, h)))
+    except Exception:
+        return False
+
+
+def _verify_minisign(content, sig_text):
+    """Verify a minisign signature against the embedded pubkey. Handles
+    BOTH algos minisign emits — modern `ED` (Ed25519 over BLAKE2b-512
+    prehash, what `minisign -S` produces by default since v0.10) and
+    legacy `Ed` (Ed25519 over raw bytes). Self-contained."""
     # Pubkey: base64(algo[2] + key_id[8] + ed25519_pub[32])
     pub_raw = base64.b64decode(_HELPER_MINISIGN_PUBKEY_B64)
     if len(pub_raw) < 42:
@@ -371,6 +452,7 @@ def _verify_minisign(content, sig_text):
     # Signature file: first non-comment base64 line decodes to
     # algo[2] + key_id[8] + ed25519_sig[64]
     sig64 = None
+    algo = None
     for line in sig_text.splitlines():
         line = line.strip()
         if not line or line.startswith('untrusted comment') or line.startswith('trusted comment'):
@@ -378,17 +460,20 @@ def _verify_minisign(content, sig_text):
         try:
             raw = base64.b64decode(line)
             if len(raw) >= 74:
+                algo = bytes(raw[:2])
                 sig64 = raw[10:74]
                 break
         except Exception:
             continue
     if sig64 is None:
         return False
-    try:
-        Ed25519PublicKey.from_public_bytes(pub32).verify(sig64, content)
-        return True
-    except Exception:
-        return False
+    if algo == b'ED':
+        # Modern: signature was made over BLAKE2b-512(content)
+        msg = _hashlib.blake2b(content, digest_size=64).digest()
+    else:
+        # Legacy (b'Ed') or unknown — assume raw signature
+        msg = content
+    return ed25519_verify(pub32, sig64, msg)
 
 
 def update_self(api_base='https://api.dev.redstars.redlinks.fr'):
