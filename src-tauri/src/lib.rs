@@ -123,6 +123,11 @@ pub fn run() {
                 }
             }
 
+            // Boot-time sweep: drop orphan refs/iso symlink mounts and
+            // stale .tmp from a previous run (the previous helper process
+            // is dead by definition — it can't be holding any of this).
+            script_updater::cleanup_runtime_state(&handle);
+
             // Pull the latest helper.py from GitHub before we spawn it.
             // Sync call with a short timeout — if GitHub is slow we fall
             // back to the cached or bundled copy and the background

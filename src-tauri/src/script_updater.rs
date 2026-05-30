@@ -110,6 +110,25 @@ fn cache_path(app: &AppHandle) -> Option<PathBuf> {
     Some(dir.join(SCRIPT_NAME))
 }
 
+/// Sweep orphan runtime state in the user's helper cache dir. Targets
+/// only state that doesn't survive a restart anyway:
+///   - `refs/` : symlink mounts left over from a previous session
+///   - `iso/`  : leftover artefacts from the old ISO demo flow
+///   - `helper.tmp` : partial write from an interrupted fetch
+///
+/// We leave `helper.py` and `helper.version` alone — those are the
+/// auto-updated cache the script_updater itself owns. Called at
+/// startup AND after every successful fetch_and_cache. Idempotent.
+pub fn cleanup_runtime_state(app: &AppHandle) {
+    let dir = match cache_path(app).and_then(|p| p.parent().map(PathBuf::from)) {
+        Some(d) => d,
+        None => return,
+    };
+    let _ = fs::remove_dir_all(dir.join("refs"));
+    let _ = fs::remove_dir_all(dir.join("iso"));
+    let _ = fs::remove_file(dir.join("helper.tmp"));
+}
+
 /// Fetch the latest manifest from the backend. Short timeout so a slow
 /// API call doesn't delay app startup.
 fn fetch_manifest() -> Result<ScriptManifest, String> {
@@ -240,6 +259,13 @@ pub fn fetch_and_cache(app: &AppHandle) -> bool {
     }
 
     eprintln!("[script-updater] cached v{} at {}", manifest.version, cache.display());
+
+    // Sweep orphan runtime state so the freshly-cached helper starts
+    // from a clean slate (the new script may not understand the old
+    // refs/iso format, and a partial .tmp from a previous attempt has
+    // no business surviving an upgrade).
+    cleanup_runtime_state(app);
+
     true
 }
 

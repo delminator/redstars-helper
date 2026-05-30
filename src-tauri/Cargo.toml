@@ -1,6 +1,6 @@
 [package]
 name = "redstars-helper"
-version = "0.2.6"
+version = "0.2.7"
 description = "Redstars local helper agent"
 authors = ["Redstars"]
 edition = "2021"
