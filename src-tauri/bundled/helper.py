@@ -35,7 +35,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.0'
+VERSION = '0.5.1'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -338,6 +338,105 @@ def unmount_iso(iso_path, dev):
         pass
 
 
+# ─── Self-update over HTTP (triggered by /helper/update) ───────────────
+#
+# The dashboard polls /api/v1/agents/script-latest for the canonical
+# helper.py release, then POSTs /helper/update if the running version
+# differs. We fetch + verify minisign + atomic-write + execv ourselves —
+# same model as the Tauri shell's auto-update poller, just user-initiated
+# from the browser.
+
+# Embedded minisign pubkey — matches the `pubkey` in tauri.conf.json's
+# updater config, i.e. the same key that signs the .deb/.dmg/.msi
+# updates AND the helper.py release assets (release-script.yml in
+# redstars-helper). Verification is fail-closed: missing cryptography
+# lib, malformed signature, or signature mismatch → REJECT, keep cache.
+_HELPER_MINISIGN_PUBKEY_B64 = 'RWSLOkiWKfscZzD9cOda4UFFRyOZJh5lu/lZZ56+oxa152FXiNtvuM/b'
+
+
+def _verify_minisign(content, sig_text):
+    """Verify minisign legacy ("Ed") signature against the embedded
+    pubkey. Returns True if valid. Uses `cryptography` if installed,
+    falls back to False (fail-closed) otherwise."""
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except ImportError:
+        print('[update] cryptography lib not installed — cannot verify signature')
+        return False
+    # Pubkey: base64(algo[2] + key_id[8] + ed25519_pub[32])
+    pub_raw = base64.b64decode(_HELPER_MINISIGN_PUBKEY_B64)
+    if len(pub_raw) < 42:
+        return False
+    pub32 = pub_raw[10:42]
+    # Signature file: first non-comment base64 line decodes to
+    # algo[2] + key_id[8] + ed25519_sig[64]
+    sig64 = None
+    for line in sig_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('untrusted comment') or line.startswith('trusted comment'):
+            continue
+        try:
+            raw = base64.b64decode(line)
+            if len(raw) >= 74:
+                sig64 = raw[10:74]
+                break
+        except Exception:
+            continue
+    if sig64 is None:
+        return False
+    try:
+        Ed25519PublicKey.from_public_bytes(pub32).verify(sig64, content)
+        return True
+    except Exception:
+        return False
+
+
+def update_self(api_base='https://api.dev.redstars.redlinks.fr'):
+    """Pull the latest signed helper.py from the platform, verify, and
+    write it next to the running script. Returns a dict describing the
+    outcome (caller respawns via execv if `updated` is True)."""
+    import urllib.request, hashlib
+    try:
+        info_url = api_base.rstrip('/') + '/api/v1/agents/script-latest?name=helper.py'
+        with urllib.request.urlopen(info_url, timeout=15) as r:
+            info = json.loads(r.read())
+    except Exception as e:
+        return {'updated': False, 'error': f'fetch script-latest: {e}'}
+    new_version = info.get('version', '?')
+    if new_version == VERSION:
+        return {'updated': False, 'version': VERSION, 'reason': 'already up to date'}
+    try:
+        with urllib.request.urlopen(info['script_url'], timeout=30) as r:
+            script_bytes = r.read()
+        with urllib.request.urlopen(info['signature_url'], timeout=15) as r:
+            sig_text = r.read().decode('utf-8', errors='replace')
+    except Exception as e:
+        return {'updated': False, 'error': f'fetch release asset: {e}'}
+    expected = info.get('sha256', '')
+    if expected:
+        got = hashlib.sha256(script_bytes).hexdigest()
+        if got != expected:
+            return {'updated': False, 'error': f'sha256 mismatch: expected {expected[:16]}…, got {got[:16]}…'}
+    if not _verify_minisign(script_bytes, sig_text):
+        return {'updated': False, 'error': 'minisign verification failed (or cryptography lib missing)'}
+    target = Path(__file__).resolve()
+    if not os.access(target.parent, os.W_OK):
+        return {'updated': False, 'error': f'cannot write to {target.parent}'}
+    tmp = target.with_suffix('.py.tmp')
+    try:
+        tmp.write_bytes(script_bytes)
+        os.replace(tmp, target)
+    except Exception as e:
+        return {'updated': False, 'error': f'write failed: {e}'}
+    return {
+        'updated': True,
+        'from_version': VERSION,
+        'version': new_version,
+        'path': str(target),
+        'size': len(script_bytes),
+    }
+
+
 def list_mount(mount_path):
     """Lightweight directory listing for the dashboard frame."""
     out = []
@@ -521,6 +620,29 @@ class Handler(SimpleHTTPRequestHandler):
                 'action': ', '.join(actions) or 'nothing to do',
                 'message': 'Close Firefox first, then reopen, for the reset to apply cleanly.',
             })
+            return
+
+        if ep == '/update':
+            body = self._read_json()
+            api_base = body.get('api_base') or 'https://api.dev.redstars.redlinks.fr'
+            try:
+                result = update_self(api_base)
+            except Exception as e:
+                self._json(500, {'error': type(e).__name__ + ': ' + str(e)})
+                return
+            self._json(200, result)
+            # If we replaced our own file, exec the same interpreter on the
+            # same path so we come back up with the new code. Brief sleep so
+            # the response gets flushed first.
+            if result.get('updated'):
+                import sys as _sys
+                def _restart():
+                    time.sleep(0.5)
+                    try:
+                        os.execv(_sys.executable, [_sys.executable, str(Path(__file__).resolve())])
+                    except Exception as e:
+                        print(f'[update] execv failed: {e}')
+                threading.Thread(target=_restart, daemon=True).start()
             return
 
         if ep == '/iso/mount':
