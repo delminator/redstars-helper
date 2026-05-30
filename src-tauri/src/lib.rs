@@ -17,11 +17,27 @@ struct HelperProc(Mutex<Option<Child>>);
 /// Spawn helper.py from whichever copy is currently authoritative —
 /// dev-override > cached fetched from GitHub > bundled fallback. See
 /// `script_updater::current_script_path` for the resolution order.
+///
+/// Python lookup tries multiple candidates in order: pyenv shims first
+/// (some users override system python that way, and desktop-app spawn
+/// inherits a stripped PATH without ~/.pyenv/shims), then a bare name
+/// for PATH resolution, then common system locations. First successful
+/// spawn wins.
 fn spawn_helper(app: &AppHandle) -> Option<Child> {
     let script = script_updater::current_script_path(app);
-    let py = which_python();
-    eprintln!("[helper] launching {} {}", py, script.display());
-    Command::new(py).arg("-u").arg(&script).spawn().ok()
+    for py in python_candidates() {
+        // Absolute path: cheap existence check before fork.
+        if py.starts_with('/') && !std::path::Path::new(&py).is_file() {
+            continue;
+        }
+        eprintln!("[helper] trying {} {}", py, script.display());
+        if let Ok(child) = Command::new(&py).arg("-u").arg(&script).spawn() {
+            eprintln!("[helper] spawned via {}", py);
+            return Some(child);
+        }
+    }
+    eprintln!("[helper] no usable python found; user must install python3");
+    None
 }
 
 /// Restart helper subprocess in place (kill + respawn). Used by the
@@ -37,10 +53,31 @@ fn restart_helper_proc(app: &AppHandle) {
     *g = spawn_helper(app);
 }
 
+/// Ordered python-interpreter candidates. Pyenv shims first so users
+/// who manage python via pyenv don't get a stale system python when
+/// the desktop app's spawn environment lacks ~/.pyenv/shims in PATH.
 #[cfg(unix)]
-fn which_python() -> &'static str { "python3" }
+fn python_candidates() -> Vec<String> {
+    let mut v = Vec::new();
+    if let Ok(home) = std::env::var("HOME") {
+        v.push(format!("{}/.pyenv/shims/python3", home));
+        v.push(format!("{}/.pyenv/shims/python", home));
+    }
+    v.push("python3".to_string());            // PATH lookup
+    v.push("/usr/bin/python3".to_string());
+    v.push("/usr/local/bin/python3".to_string());
+    v.push("/opt/homebrew/bin/python3".to_string());  // mac arm64
+    v.push("/opt/local/bin/python3".to_string());     // macports
+    v
+}
 #[cfg(windows)]
-fn which_python() -> &'static str { "python" }
+fn python_candidates() -> Vec<String> {
+    vec![
+        "python".to_string(),
+        "python3".to_string(),
+        "py".to_string(),
+    ]
+}
 
 #[tauri::command]
 fn open_demo(app: AppHandle) -> Result<(), String> {
