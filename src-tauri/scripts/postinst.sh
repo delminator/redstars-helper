@@ -27,4 +27,24 @@ for h in /home/*/; do
     rm -f "$d/helper.tmp" >/dev/null 2>&1
 done
 
+# Register the `redstars-helper://` URL scheme on the .desktop file so
+# the dashboard's "Lancer le helper" button can launch the shell from
+# a browser. The shell doesn't care what URL it receives — being
+# invoked is enough to start the Python helper subprocess.
+DESKTOP="/usr/share/applications/Redstars Helper.desktop"
+if [ -f "$DESKTOP" ]; then
+    # Make sure Exec accepts an arg (xdg-open passes the URL).
+    grep -q '^Exec=.*%u' "$DESKTOP" || \
+        sed -i 's|^\(Exec=[^%]*\)$|\1 %u|' "$DESKTOP" 2>/dev/null
+    # Idempotent MimeType: merge with any existing handler list.
+    if ! grep -q '^MimeType=.*x-scheme-handler/redstars-helper' "$DESKTOP"; then
+        if grep -q '^MimeType=' "$DESKTOP"; then
+            sed -i 's|^MimeType=|MimeType=x-scheme-handler/redstars-helper;|' "$DESKTOP" 2>/dev/null
+        else
+            echo "MimeType=x-scheme-handler/redstars-helper;" >> "$DESKTOP"
+        fi
+    fi
+    update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
+fi
+
 exit 0
