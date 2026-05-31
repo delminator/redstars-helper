@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.12'
+VERSION = '0.5.13'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -259,6 +259,49 @@ MOUNTED = {}  # iso_id → {'iso_path','mount_path','dev','label','created_at'}
 # juste des liens symboliques. Cleanup à la demande via /helper/refs/unmount.
 REFS_CACHE_DIR = Path.home() / '.cache' / 'redstars-helper' / 'refs'
 REFS = {}  # refs_id → {'dir_path','label','sources':[...],'created_at'}
+
+def _recover_refs_from_disk():
+    """Au boot, repeuple REFS depuis les sous-dossiers existants de
+    ~/.cache/redstars-helper/refs/<LABEL>-<12hex>. Sans ça, après un
+    restart du helper (ou un crash + relaunch via tray), les paths
+    d'un mount fait par la session précédente sont rejetés en 403
+    'path not under any active /refs/ mount' alors que les symlinks
+    existent toujours sur disque. /refs/open et /refs/unmount avec
+    l'ID d'un mount pré-restart tombaient aussi en 404."""
+    if not REFS_CACHE_DIR.is_dir():
+        return
+    import re as _re
+    pat = _re.compile(r'^(?P<label>.+)-(?P<id>[0-9a-f]{12})$')
+    for child in REFS_CACHE_DIR.iterdir():
+        if not child.is_dir():
+            continue
+        m = pat.match(child.name)
+        if not m:
+            continue
+        refs_id = m.group('id')
+        if refs_id in REFS:
+            continue
+        sources = []
+        try:
+            for entry in child.iterdir():
+                try:
+                    tgt = os.readlink(str(entry))
+                    sources.append(tgt if os.path.isabs(tgt) else str((child / tgt).resolve()))
+                except OSError:
+                    pass
+        except OSError:
+            pass
+        try:
+            created_at = child.stat().st_mtime
+        except OSError:
+            created_at = time.time()
+        REFS[refs_id] = {
+            'dir_path': str(child),
+            'label': m.group('label'),
+            'sources': sources,
+            'created_at': created_at,
+        }
+_recover_refs_from_disk()
 
 
 def make_iso(label='REDSTARS', payload=None):
