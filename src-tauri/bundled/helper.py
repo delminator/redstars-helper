@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.15'
+VERSION = '0.5.16'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -815,6 +815,16 @@ class Handler(SimpleHTTPRequestHandler):
         if ep == '/status':
             self._json(200, {'ok': True, 'version': VERSION})
             return
+        if ep == '/redDEC-job':
+            # GET /redDEC-job?id=<job_id> — poll endpoint pour /redDEC-chain.
+            job_id = (query.get('id', ['']) or [''])[0]
+            with JOBS_LOCK:
+                job = JOBS.get(job_id)
+                if job is None:
+                    self._json(404, {'error': 'unknown job id'}); return
+                snapshot = dict(job)
+            self._json(200, snapshot)
+            return
         if ep == '/disk':
             # Espace dispo sur la partition qui hébergera les sorties.
             # ?path=<…> ou défaut = le cache redstars-helper (= là où
@@ -1266,18 +1276,6 @@ class Handler(SimpleHTTPRequestHandler):
                 })
             except Exception as e:
                 self._json(500, {'error': f'{type(e).__name__}: {e}'})
-            return
-
-        if ep == '/redDEC-job':
-            # GET /redDEC-job?id=<job_id> — poll endpoint.
-            job_id = (query.get('id', ['']) or [''])[0]
-            with JOBS_LOCK:
-                job = JOBS.get(job_id)
-                if job is None:
-                    self._json(404, {'error': 'unknown job id'}); return
-                # Copy pour pas garder le lock pendant le json dump.
-                snapshot = dict(job)
-            self._json(200, snapshot)
             return
 
         if ep == '/redDEC-chain':
