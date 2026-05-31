@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.16'
+VERSION = '0.5.17'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -1560,6 +1560,12 @@ def _serve_thread(server, label):
 
 
 def main():
+    # SO_REUSEADDR : sur Android, l'OS garde le socket 30-120 s en TIME_WAIT
+    # après un crash du process. Sans REUSEADDR, le redémarrage de l'app
+    # (auto-update du script_updater ou retour foreground) → EADDRINUSE
+    # → startupError → MobileBlocker. Idem desktop si le user relance le
+    # tray avant la fin du TIME_WAIT.
+    HTTPServer.allow_reuse_address = True
     # HTTP server on :8080 — page + helper API, same-origin path.
     http_srv = HTTPServer(('0.0.0.0', PORT), Handler)
     print(f'redstars-helper {VERSION}')
