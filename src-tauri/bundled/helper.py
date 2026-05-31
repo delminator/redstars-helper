@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.11'
+VERSION = '0.5.12'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -571,6 +571,12 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header('Access-Control-Allow-Origin', allow)
             self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
             self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+            # Private Network Access (W3C PNA spec) : Firefox 142+/Chrome 130+
+            # exigent ce header dans la réponse au preflight quand une page
+            # publique (https://dev.redstars.redlinks.fr) cible une IP
+            # privée (127.0.0.1 via local.redlinks.fr). Sans → Firefox
+            # bloque silencieusement avec "Status code: (null)".
+            self.send_header('Access-Control-Allow-Private-Network', 'true')
         # Cross-origin isolation for future SharedArrayBuffer / WASM threads.
         self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
         self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
