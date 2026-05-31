@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.17'
+VERSION = '0.5.18'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -361,57 +361,35 @@ def _redDEC_chain_worker(job_id: str, hash_hex: str, level: int,
         except (tarfile.TarError, OSError):
             bundle_files = None
 
-        REFS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        refs_id  = uuid.uuid4().hex[:12]
+        # Construit une vraie iso virtuelle avec les bytes décodés en
+        # payload. L'iso est montée via udisksctl → l'utilisateur la voit
+        # apparaître dans son explorateur de fichiers comme un disque réel
+        # labellisé (REDSTARS, DECODED-Red…). Cf. message user :
+        # "le tar doit être chargé dans la variable payload quand tu crées
+        # l'iso virtuel".
         if bundle_files:
-            label    = f'BUNDLE-Red{level}'
-            dir_path = REFS_CACHE_DIR / f'{label}-{refs_id}'
-            dir_path.mkdir(parents=True, exist_ok=False)
-            entries  = []
-            sources  = []
-            for src in bundle_files:
-                link = dir_path / src.name
-                i = 1
-                while link.exists():
-                    link = dir_path / f'{src.stem}-{i}{src.suffix}'
-                    i += 1
-                link.symlink_to(src)
-                entries.append({
-                    'name': link.name, 'path': str(link),
-                    'target': str(src), 'size': src.stat().st_size,
-                    'is_dir': False,
-                })
-                sources.append(str(src))
-            REFS[refs_id] = {
-                'dir_path': str(dir_path), 'label': label,
-                'sources': sources, 'created_at': time.time(),
-            }
-            result = {
-                'level': level, 'bundle': True,
-                'output_path': str(out_path), 'output_size': len(out_bytes),
-                'id': refs_id, 'mount_path': str(dir_path), 'label': label,
-                'entries': entries, 'n_files': len(entries),
-            }
+            iso_label  = f'BUNDLE-Red{level}'
+            iso_payload = {f.name: f.read_bytes() for f in bundle_files}
         else:
-            label    = f'DECODED-Red{level}'
-            dir_path = REFS_CACHE_DIR / f'{label}-{refs_id}'
-            dir_path.mkdir(parents=True, exist_ok=False)
-            link_target = dir_path / out_path.name
-            link_target.symlink_to(out_path)
-            REFS[refs_id] = {
-                'dir_path': str(dir_path), 'label': label,
-                'sources': [str(out_path)], 'created_at': time.time(),
-            }
-            result = {
-                'level': level, 'bundle': False,
-                'output_path': str(out_path), 'output_size': len(out_bytes),
-                'id': refs_id, 'mount_path': str(dir_path), 'label': label,
-                'entries': [{
-                    'name': link_target.name, 'path': str(link_target),
-                    'target': str(out_path), 'size': len(out_bytes),
-                    'is_dir': False,
-                }],
-            }
+            iso_label  = f'DECODED-Red{level}'
+            iso_payload = out_bytes
+        iso_id = uuid.uuid4().hex[:12]
+        iso_path = make_iso(iso_label, payload=iso_payload)
+        mount_path, dev = mount_iso(iso_path)
+        MOUNTED[iso_id] = {
+            'iso_path': str(iso_path),
+            'mount_path': mount_path,
+            'dev': dev,
+            'label': iso_label,
+            'created_at': time.time(),
+        }
+        result = {
+            'level': level, 'bundle': bool(bundle_files),
+            'output_path': str(out_path), 'output_size': len(out_bytes),
+            'id': iso_id, 'mount_path': mount_path, 'label': iso_label,
+            'iso_path': str(iso_path),
+            'entries': list_mount(mount_path),
+        }
         _job_set(job_id, status='done', progress=1.0, done_at=time.time(),
                  result=result)
     except Exception as e:
@@ -1239,18 +1217,50 @@ class Handler(SimpleHTTPRequestHandler):
                 bundle_size = bundle_path.stat().st_size
                 try:
                     level, h, _ = _CODEC['redEC_chain'](bundle_path, out_path)
-                    self._json(200, {
-                        'ok': True,
-                        'level': f'Red{level}',
-                        'n_chain_steps': level,
-                        'output_hash_hex': h.hex(),
-                        'output_bytes': len(h),
-                        'bundle_bytes': bundle_size,
-                        'n_files': len(files_meta),
-                        'files': files_meta,
-                    })
                 except Exception as e:
-                    self._json(500, {'error': f'{type(e).__name__}: {e}'})
+                    self._json(500, {'error': f'{type(e).__name__}: {e}'}); return
+                # Au save : le tar lui-même est CHARGÉ DANS LE PAYLOAD de
+                # l'iso virtuel. C'est lui qui contient les données réelles
+                # — la chaîne redEC sert juste à générer un hash partagable
+                # (QR / collage), pas à reconstruire le tar (le chain n'est
+                # pas lossless pour > 1024 o ; sur un partage on récupère
+                # le hash, on lit ce qu'on peut, l'iso local a la copie
+                # complète). Cf. docs/CODEC_LIMITS.md.
+                iso_label = (body.get('label') or 'REDSTARS')[:32]
+                tar_bytes = bundle_path.read_bytes()
+                iso_id = uuid.uuid4().hex[:12]
+                iso_info = None
+                try:
+                    iso_path = make_iso(iso_label, payload=tar_bytes)
+                    mount_path, dev = mount_iso(iso_path)
+                    MOUNTED[iso_id] = {
+                        'iso_path': str(iso_path),
+                        'mount_path': mount_path,
+                        'dev': dev,
+                        'label': iso_label,
+                        'created_at': time.time(),
+                    }
+                    iso_info = {
+                        'iso_id': iso_id,
+                        'mount_path': mount_path,
+                        'label': iso_label,
+                        'entries': list_mount(mount_path),
+                    }
+                except Exception as e:
+                    # ISO mount best-effort — si udisksctl manque ou échoue
+                    # on garde quand même le hash redEC pour le partage.
+                    iso_info = {'error': f'iso mount failed: {type(e).__name__}: {e}'}
+                self._json(200, {
+                    'ok': True,
+                    'level': f'Red{level}',
+                    'n_chain_steps': level,
+                    'output_hash_hex': h.hex(),
+                    'output_bytes': len(h),
+                    'bundle_bytes': bundle_size,
+                    'n_files': len(files_meta),
+                    'files': files_meta,
+                    'iso': iso_info,
+                })
             return
 
         if ep == '/redDEC':
@@ -1433,7 +1443,15 @@ class Handler(SimpleHTTPRequestHandler):
             refs_id = body.get('id', '')
             info = REFS.get(refs_id)
             if not info:
-                self._json(404, {'error': 'unknown id'}); return
+                # Fallback : depuis 0.5.18 le decode et le bundle save
+                # construisent une vraie iso via make_iso → l'entry vit
+                # dans MOUNTED, pas REFS. Aligne la forme attendue par la
+                # suite (dir_path).
+                m = MOUNTED.get(refs_id)
+                if m:
+                    info = {'dir_path': m['mount_path'], 'label': m.get('label', '')}
+                else:
+                    self._json(404, {'error': 'unknown id'}); return
             target = body.get('path') or info['dir_path']
             # Path must sit under the refs dir we created. We use absolute() +
             # normpath, NOT resolve() — the refs are symlinks pointing OUTSIDE
