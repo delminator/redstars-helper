@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.13'
+VERSION = '0.5.14'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -1047,7 +1047,13 @@ class Handler(SimpleHTTPRequestHandler):
                 out_path    = Path(td) / 'out.bin'
                 files_meta  = []
                 seen        = set()
-                with tarfile.open(bundle_path, 'w', format=tarfile.USTAR_FORMAT) as tar:
+                # Format PAX : supporte les linknames > 100 chars qui font
+                # crasher USTAR (les /refs/ ont des paths longs). dereference
+                # = True : on tar le CONTENU des cibles, pas les symlinks
+                # eux-mêmes — c'est ce qu'on veut, le mount /refs/ ne sert
+                # que d'agrégation, le payload est les vrais fichiers.
+                with tarfile.open(bundle_path, 'w', format=tarfile.PAX_FORMAT) as tar:
+                    tar.dereference = True
                     for src in abs_paths:
                         name = Path(src).name
                         if name in seen:
@@ -1057,7 +1063,10 @@ class Handler(SimpleHTTPRequestHandler):
                                 i += 1
                             name = f'{base}-{i}{ext}'
                         seen.add(name)
-                        tar.add(src, arcname=name)
+                        try:
+                            tar.add(src, arcname=name)
+                        except Exception as e:
+                            self._json(500, {'error': f'tar add failed for {name}: {type(e).__name__}: {e}'}); return
                         files_meta.append({'name': name, 'size': os.path.getsize(src)})
                 bundle_size = bundle_path.stat().st_size
                 try:
