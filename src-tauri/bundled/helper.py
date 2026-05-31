@@ -34,6 +34,7 @@ import shutil
 import socket
 import ssl
 import subprocess
+import tarfile
 import threading
 import time
 import uuid
@@ -41,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.10'
+VERSION = '0.5.11'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -959,6 +960,73 @@ class Handler(SimpleHTTPRequestHandler):
                     self._json(500, {'error': f'{type(e).__name__}: {e}'})
             return
 
+        if ep == '/redEC/bundle':
+            # Bundle plusieurs fichiers en UN seul hash. C'est le mode
+            # canonique pour le "disque virtuel" : tout le payload (1 MiB
+            # pour Red1, 1 GiB pour Red2, …) est encodé en une seule chaîne
+            # redEC, donc UN seul hash partageable via QR. La sortie
+            # redDEC-chain (modifiée pour détecter `tarfile.is_tarfile`)
+            # ré-extrait les fichiers à leurs noms d'origine.
+            #
+            # body : {"paths": ["<abs>/a", "<abs>/b", …], "label"?: "…"}
+            #        Chaque path doit être sous un /refs/ actif (même garde
+            #        que /redEC), pour empêcher le browser d'aller tarrer
+            #        /etc/* via un POST malicieux.
+            err = _ensure_codec()
+            if err:
+                self._json(500, {'error': f'codec load failed: {err}', 'hint': 'pip install torch numpy'}); return
+            body  = self._read_json()
+            paths = body.get('paths') or []
+            if not paths:
+                self._json(400, {'error': 'paths required'}); return
+            abs_paths = []
+            for p in paths:
+                src = os.path.normpath(os.path.abspath(p))
+                allowed = False
+                for info in REFS.values():
+                    mount = os.path.normpath(os.path.abspath(info['dir_path']))
+                    if src == mount or src.startswith(mount + os.sep):
+                        allowed = True; break
+                if not allowed:
+                    self._json(403, {'error': f'path not under any active /refs/ mount: {p}'}); return
+                if not os.path.isfile(src):
+                    self._json(404, {'error': f'no such file: {src}'}); return
+                abs_paths.append(src)
+            import tempfile
+            with tempfile.TemporaryDirectory() as td:
+                bundle_path = Path(td) / 'bundle.tar'
+                out_path    = Path(td) / 'out.bin'
+                files_meta  = []
+                seen        = set()
+                with tarfile.open(bundle_path, 'w', format=tarfile.USTAR_FORMAT) as tar:
+                    for src in abs_paths:
+                        name = Path(src).name
+                        if name in seen:
+                            base, ext = os.path.splitext(name)
+                            i = 1
+                            while f'{base}-{i}{ext}' in seen:
+                                i += 1
+                            name = f'{base}-{i}{ext}'
+                        seen.add(name)
+                        tar.add(src, arcname=name)
+                        files_meta.append({'name': name, 'size': os.path.getsize(src)})
+                bundle_size = bundle_path.stat().st_size
+                try:
+                    level, h, _ = _CODEC['redEC_chain'](bundle_path, out_path)
+                    self._json(200, {
+                        'ok': True,
+                        'level': f'Red{level}',
+                        'n_chain_steps': level,
+                        'output_hash_hex': h.hex(),
+                        'output_bytes': len(h),
+                        'bundle_bytes': bundle_size,
+                        'n_files': len(files_meta),
+                        'files': files_meta,
+                    })
+                except Exception as e:
+                    self._json(500, {'error': f'{type(e).__name__}: {e}'})
+            return
+
         if ep == '/redDEC':
             err = _ensure_codec()
             if err:
@@ -1055,10 +1123,67 @@ class Handler(SimpleHTTPRequestHandler):
                 out_path = cache_root / f'{hash_hex[:8]}-{safe}'
                 out_path.write_bytes(out_bytes)
 
-                # Monte le fichier décodé via le mécanisme /refs/ pour que
-                # le caller récupère un MountInfo prêt à brancher.
+                # Détection bundle : si la sortie est un tar (produit par
+                # /redEC/bundle), on extrait les fichiers à leurs noms
+                # d'origine et on monte le répertoire d'extraction. Sinon
+                # — payload mono-fichier legacy — on monte directement le
+                # blob comme avant.
+                bundle_files = None
+                try:
+                    if tarfile.is_tarfile(out_path):
+                        extract_root = cache_root / f'{hash_hex[:8]}-bundle'
+                        extract_root.mkdir(parents=True, exist_ok=True)
+                        with tarfile.open(out_path) as tar:
+                            for m in tar.getmembers():
+                                if not m.isfile():
+                                    continue
+                                # Refuse les paths absolus / parent — un bundle
+                                # malicieux ne doit pas pouvoir écrire ailleurs.
+                                if m.name.startswith('/') or '..' in Path(m.name).parts:
+                                    continue
+                                tar.extract(m, extract_root, set_attrs=False)
+                        bundle_files = sorted(
+                            f for f in extract_root.rglob('*') if f.is_file()
+                        )
+                except (tarfile.TarError, OSError):
+                    bundle_files = None
+
                 REFS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
                 refs_id  = uuid.uuid4().hex[:12]
+                if bundle_files:
+                    label    = f'BUNDLE-Red{level}'
+                    dir_path = REFS_CACHE_DIR / f'{label}-{refs_id}'
+                    dir_path.mkdir(parents=True, exist_ok=False)
+                    entries  = []
+                    sources  = []
+                    for src in bundle_files:
+                        link = dir_path / src.name
+                        # Évite collision si plusieurs membres tar ont le même
+                        # nom (après flatten rglob).
+                        i = 1
+                        while link.exists():
+                            link = dir_path / f'{src.stem}-{i}{src.suffix}'
+                            i += 1
+                        link.symlink_to(src)
+                        entries.append({
+                            'name': link.name, 'path': str(link),
+                            'target': str(src), 'size': src.stat().st_size,
+                            'is_dir': False,
+                        })
+                        sources.append(str(src))
+                    REFS[refs_id] = {
+                        'dir_path': str(dir_path), 'label': label,
+                        'sources': sources, 'created_at': time.time(),
+                    }
+                    self._json(200, {
+                        'ok': True, 'level': level, 'bundle': True,
+                        'output_path': str(out_path), 'output_size': len(out_bytes),
+                        'id': refs_id, 'mount_path': str(dir_path), 'label': label,
+                        'entries': entries, 'n_files': len(entries),
+                    })
+                    return
+
+                # Single-file legacy path — same as before.
                 label    = f'DECODED-Red{level}'
                 dir_path = REFS_CACHE_DIR / f'{label}-{refs_id}'
                 dir_path.mkdir(parents=True, exist_ok=False)
@@ -1073,6 +1198,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json(200, {
                     'ok': True,
                     'level': level,
+                    'bundle': False,
                     'output_path': str(out_path),
                     'output_size': len(out_bytes),
                     'id': refs_id,
