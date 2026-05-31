@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.18'
+VERSION = '0.5.19'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -464,7 +464,21 @@ def make_iso(label='REDSTARS', payload=None):
                 safe = Path(str(name)).name  # strip path components
                 if not safe:
                     continue
-                (src_dir / safe).write_bytes(bytes(data))
+                dst = src_dir / safe
+                # data peut être :
+                #   - bytes / bytearray   → write direct
+                #   - str / Path qui pointe vers un fichier existant
+                #                          → copy stream (films de plusieurs
+                #                          Gio sans charger en RAM)
+                if isinstance(data, (bytes, bytearray)):
+                    dst.write_bytes(bytes(data))
+                else:
+                    src_path = Path(str(data))
+                    if src_path.is_file():
+                        shutil.copyfile(src_path, dst)
+                    else:
+                        # Fallback : on tente bytes()
+                        dst.write_bytes(bytes(data))
         # else (None) → src_dir stays empty → empty filesystem
 
         tool = next((t for t in ('xorrisofs', 'genisoimage', 'mkisofs')
@@ -1219,19 +1233,36 @@ class Handler(SimpleHTTPRequestHandler):
                     level, h, _ = _CODEC['redEC_chain'](bundle_path, out_path)
                 except Exception as e:
                     self._json(500, {'error': f'{type(e).__name__}: {e}'}); return
-                # Au save : le tar lui-même est CHARGÉ DANS LE PAYLOAD de
-                # l'iso virtuel. C'est lui qui contient les données réelles
-                # — la chaîne redEC sert juste à générer un hash partagable
-                # (QR / collage), pas à reconstruire le tar (le chain n'est
-                # pas lossless pour > 1024 o ; sur un partage on récupère
-                # le hash, on lit ce qu'on peut, l'iso local a la copie
-                # complète). Cf. docs/CODEC_LIMITS.md.
+                # Au save : on construit une vraie iso virtuelle dont le
+                # PAYLOAD est l'ensemble des fichiers sélectionnés EN
+                # DONNÉES BINAIRES DIRECTES (cf. message user :
+                # « il faut passer ces données à la variable qui construit
+                # l'iso en tant que données binaires et on devrait retrouver
+                # les fichiers d'origine »). Une fois l'iso montée, chaque
+                # film sélectionné réapparaît à la racine avec son nom
+                # d'origine, prêt à être lu/copié.
+                #
+                # Le redEC chain ne sert qu'à générer un hash partageable
+                # (QR / paste) ; la donnée vraie vit dans l'iso locale.
                 iso_label = (body.get('label') or 'REDSTARS')[:32]
-                tar_bytes = bundle_path.read_bytes()
+                # dict {nom_fichier: chemin_source} → make_iso fait un
+                # stream copy par fichier (pas de bytes en RAM).
+                iso_payload = {}
+                used = set()
+                for src in abs_paths:
+                    nm = Path(src).name
+                    if nm in used:
+                        base, ext = os.path.splitext(nm)
+                        i = 1
+                        while f'{base}-{i}{ext}' in used:
+                            i += 1
+                        nm = f'{base}-{i}{ext}'
+                    used.add(nm)
+                    iso_payload[nm] = src
                 iso_id = uuid.uuid4().hex[:12]
                 iso_info = None
                 try:
-                    iso_path = make_iso(iso_label, payload=tar_bytes)
+                    iso_path = make_iso(iso_label, payload=iso_payload)
                     mount_path, dev = mount_iso(iso_path)
                     MOUNTED[iso_id] = {
                         'iso_path': str(iso_path),
