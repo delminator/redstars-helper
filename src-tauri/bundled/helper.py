@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.19'
+VERSION = '0.5.20'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -342,54 +342,46 @@ def _redDEC_chain_worker(job_id: str, hash_hex: str, level: int,
         out_path = cache_root / f'{hash_hex[:8]}-{safe}'
         out_path.write_bytes(out_bytes)
 
-        # Détection bundle tar.
-        bundle_files = None
-        try:
-            if tarfile.is_tarfile(out_path):
-                extract_root = cache_root / f'{hash_hex[:8]}-bundle'
-                extract_root.mkdir(parents=True, exist_ok=True)
-                with tarfile.open(out_path) as tar:
-                    for m in tar.getmembers():
-                        if not m.isfile():
-                            continue
-                        if m.name.startswith('/') or '..' in Path(m.name).parts:
-                            continue
-                        tar.extract(m, extract_root, set_attrs=False)
-                bundle_files = sorted(
-                    f for f in extract_root.rglob('*') if f.is_file()
-                )
-        except (tarfile.TarError, OSError):
-            bundle_files = None
-
-        # Construit une vraie iso virtuelle avec les bytes décodés en
-        # payload. L'iso est montée via udisksctl → l'utilisateur la voit
-        # apparaître dans son explorateur de fichiers comme un disque réel
-        # labellisé (REDSTARS, DECODED-Red…). Cf. message user :
-        # "le tar doit être chargé dans la variable payload quand tu crées
-        # l'iso virtuel".
-        if bundle_files:
-            iso_label  = f'BUNDLE-Red{level}'
-            iso_payload = {f.name: f.read_bytes() for f in bundle_files}
-        else:
-            iso_label  = f'DECODED-Red{level}'
-            iso_payload = out_bytes
+        # Les `out_bytes` SONT directement les bytes d'une iso 9660 / UDF
+        # (l'encode redEC porte sur l'iso construite côté envoi, pas sur
+        # un tar). Le système de fichiers ISO porte sa propre table
+        # d'index — on monte la sortie telle quelle et l'utilisateur
+        # retrouve ses fichiers à la racine, sans cache local ni sidecar
+        # de métadonnées (c.-à-d. ça marche sur n'importe quelle machine
+        # qui reçoit juste le hash + le bundle_size).
+        ISO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        iso_label = f'BUNDLE-Red{level}'
         iso_id = uuid.uuid4().hex[:12]
-        iso_path = make_iso(iso_label, payload=iso_payload)
-        mount_path, dev = mount_iso(iso_path)
-        MOUNTED[iso_id] = {
-            'iso_path': str(iso_path),
-            'mount_path': mount_path,
-            'dev': dev,
-            'label': iso_label,
-            'created_at': time.time(),
-        }
+        iso_path = ISO_CACHE_DIR / f'{iso_id}.iso'
+        shutil.move(str(out_path), str(iso_path))
+        mount_path = None
+        dev = None
+        mount_error = None
+        try:
+            mount_path, dev = mount_iso(iso_path)
+            MOUNTED[iso_id] = {
+                'iso_path': str(iso_path),
+                'mount_path': mount_path,
+                'dev': dev,
+                'label': iso_label,
+                'created_at': time.time(),
+            }
+        except Exception as e:
+            # Mount KO = la sortie cascade n'est pas une iso valide (codec
+            # a perdu des bits sur une entrée non cascade-valide, ou
+            # bundle_size faux). On garde quand même le .iso sur disque
+            # pour debug et on remonte l'erreur au client — pas de
+            # fallback `payload.bin` muet qui ferait croire à un succès.
+            mount_error = f'{type(e).__name__}: {e}'
         result = {
-            'level': level, 'bundle': bool(bundle_files),
-            'output_path': str(out_path), 'output_size': len(out_bytes),
+            'level': level,
+            'output_path': str(iso_path), 'output_size': len(out_bytes),
             'id': iso_id, 'mount_path': mount_path, 'label': iso_label,
             'iso_path': str(iso_path),
-            'entries': list_mount(mount_path),
+            'entries': list_mount(mount_path) if mount_path else [],
         }
+        if mount_error:
+            result['mount_error'] = mount_error
         _job_set(job_id, status='done', progress=1.0, done_at=time.time(),
                  result=result)
     except Exception as e:
@@ -1203,52 +1195,19 @@ class Handler(SimpleHTTPRequestHandler):
                 abs_paths.append(src)
             import tempfile
             with tempfile.TemporaryDirectory() as td:
-                bundle_path = Path(td) / 'bundle.tar'
-                out_path    = Path(td) / 'out.bin'
-                files_meta  = []
-                seen        = set()
-                # Format PAX : supporte les linknames > 100 chars qui font
-                # crasher USTAR (les /refs/ ont des paths longs). dereference
-                # = True : on tar le CONTENU des cibles, pas les symlinks
-                # eux-mêmes — c'est ce qu'on veut, le mount /refs/ ne sert
-                # que d'agrégation, le payload est les vrais fichiers.
-                with tarfile.open(bundle_path, 'w', format=tarfile.PAX_FORMAT) as tar:
-                    tar.dereference = True
-                    for src in abs_paths:
-                        name = Path(src).name
-                        if name in seen:
-                            base, ext = os.path.splitext(name)
-                            i = 1
-                            while f'{base}-{i}{ext}' in seen:
-                                i += 1
-                            name = f'{base}-{i}{ext}'
-                        seen.add(name)
-                        try:
-                            tar.add(src, arcname=name)
-                        except Exception as e:
-                            self._json(500, {'error': f'tar add failed for {name}: {type(e).__name__}: {e}'}); return
-                        files_meta.append({'name': name, 'size': os.path.getsize(src)})
-                bundle_size = bundle_path.stat().st_size
-                try:
-                    level, h, _ = _CODEC['redEC_chain'](bundle_path, out_path)
-                except Exception as e:
-                    self._json(500, {'error': f'{type(e).__name__}: {e}'}); return
-                # Au save : on construit une vraie iso virtuelle dont le
-                # PAYLOAD est l'ensemble des fichiers sélectionnés EN
-                # DONNÉES BINAIRES DIRECTES (cf. message user :
-                # « il faut passer ces données à la variable qui construit
-                # l'iso en tant que données binaires et on devrait retrouver
-                # les fichiers d'origine »). Une fois l'iso montée, chaque
-                # film sélectionné réapparaît à la racine avec son nom
-                # d'origine, prêt à être lu/copié.
-                #
-                # Le redEC chain ne sert qu'à générer un hash partageable
-                # (QR / paste) ; la donnée vraie vit dans l'iso locale.
+                out_path = Path(td) / 'out.bin'
+                # On construit l'iso d'ABORD avec le dict {nom: src_path}
+                # — make_iso stream-copy chaque fichier (pas de RAM bloat
+                # pour les gros films). Les bytes de cette iso SONT ce
+                # qu'on passe à redEC_chain : pas de tar intermédiaire.
+                # Au décode l'arbre du système de fichiers ISO 9660 / UDF
+                # sert d'index — n'importe quelle machine qui reçoit le
+                # hash + le bundle_size peut remonter l'iso et retrouver
+                # les fichiers d'origine sans cache ni sidecar local.
                 iso_label = (body.get('label') or 'REDSTARS')[:32]
-                # dict {nom_fichier: chemin_source} → make_iso fait un
-                # stream copy par fichier (pas de bytes en RAM).
                 iso_payload = {}
                 used = set()
+                files_meta = []
                 for src in abs_paths:
                     nm = Path(src).name
                     if nm in used:
@@ -1259,10 +1218,19 @@ class Handler(SimpleHTTPRequestHandler):
                         nm = f'{base}-{i}{ext}'
                     used.add(nm)
                     iso_payload[nm] = src
+                    files_meta.append({'name': nm, 'size': os.path.getsize(src)})
+                try:
+                    iso_path = make_iso(iso_label, payload=iso_payload)
+                except Exception as e:
+                    self._json(500, {'error': f'make_iso failed: {type(e).__name__}: {e}'}); return
+                bundle_size = iso_path.stat().st_size
+                try:
+                    level, h, _ = _CODEC['redEC_chain'](iso_path, out_path)
+                except Exception as e:
+                    self._json(500, {'error': f'{type(e).__name__}: {e}'}); return
                 iso_id = uuid.uuid4().hex[:12]
                 iso_info = None
                 try:
-                    iso_path = make_iso(iso_label, payload=iso_payload)
                     mount_path, dev = mount_iso(iso_path)
                     MOUNTED[iso_id] = {
                         'iso_path': str(iso_path),
@@ -1278,8 +1246,9 @@ class Handler(SimpleHTTPRequestHandler):
                         'entries': list_mount(mount_path),
                     }
                 except Exception as e:
-                    # ISO mount best-effort — si udisksctl manque ou échoue
-                    # on garde quand même le hash redEC pour le partage.
+                    # ISO mount best-effort côté envoi — si udisksctl manque
+                    # ou échoue on garde quand même le hash redEC pour le
+                    # partage. La sortie reste réceptionnable côté décode.
                     iso_info = {'error': f'iso mount failed: {type(e).__name__}: {e}'}
                 self._json(200, {
                     'ok': True,
