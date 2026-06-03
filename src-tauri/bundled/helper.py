@@ -42,7 +42,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.20'
+VERSION = '0.5.21'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -674,10 +674,36 @@ def _verify_minisign(content, sig_text):
     return ed25519_verify(pub32, sig64, msg)
 
 
+def _user_helper_cache_path() -> Path:
+    """Chemin où le Tauri shell lit helper.py EN PRIORITÉ (avant le bundled
+    root-owned). Cf. src-tauri/src/script_updater.rs::cache_path et
+    AppHandle::app_local_data_dir() :
+      - Linux   : $XDG_DATA_HOME/<bundle_id>/helper.py
+                  ou ~/.local/share/<bundle_id>/helper.py
+      - macOS   : ~/Library/Application Support/<bundle_id>/helper.py
+      - Windows : %LOCALAPPDATA%\\<bundle_id>\\helper.py
+    bundle_id = 'fr.redlinks.redstars-helper' (tauri.conf.json#identifier)."""
+    bundle_id = 'fr.redlinks.redstars-helper'
+    sysname = platform.system()
+    if sysname == 'Linux':
+        base = Path(os.environ.get('XDG_DATA_HOME') or os.path.expanduser('~/.local/share'))
+    elif sysname == 'Darwin':
+        base = Path.home() / 'Library' / 'Application Support'
+    elif sysname == 'Windows':
+        base = Path(os.environ.get('LOCALAPPDATA') or os.path.expanduser('~/AppData/Local'))
+    else:
+        base = Path.home() / '.local' / 'share'
+    return base / bundle_id / 'helper.py'
+
+
 def update_self(api_base='https://api.dev.redstars.redlinks.fr'):
     """Pull the latest signed helper.py from the platform, verify, and
-    write it next to the running script. Returns a dict describing the
-    outcome (caller respawns via execv if `updated` is True)."""
+    write it into the USER cache that the Tauri shell loads in priority
+    (cf. `_user_helper_cache_path`). On NE TOUCHE PAS le bundled root-owned
+    `/usr/lib/Redstars Helper/bundled/helper.py` — le shell est codé pour
+    préférer le cache user au bundled, donc écrire là suffit. Returns a
+    dict describing the outcome (caller respawns via execv if `updated`
+    is True ; au prochain restart du shell le nouveau helper.py est chargé)."""
     import urllib.request, hashlib
     try:
         info_url = api_base.rstrip('/') + '/api/v1/agents/script-latest?name=helper.py'
@@ -702,13 +728,24 @@ def update_self(api_base='https://api.dev.redstars.redlinks.fr'):
             return {'updated': False, 'error': f'sha256 mismatch: expected {expected[:16]}…, got {got[:16]}…'}
     if not _verify_minisign(script_bytes, sig_text):
         return {'updated': False, 'error': 'minisign verification failed (or cryptography lib missing)'}
-    target = Path(__file__).resolve()
+    # On VISE le cache user, jamais le bundled root-owned. Le Tauri shell
+    # lit cache user > bundled dans script_updater.rs (resolution order).
+    # Le helper.py qui tourne là maintenant continue de tourner ; l'update
+    # prend effet au prochain restart du shell.
+    target = _user_helper_cache_path()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        return {'updated': False, 'error': f'mkdir {target.parent}: {e}'}
     if not os.access(target.parent, os.W_OK):
         return {'updated': False, 'error': f'cannot write to {target.parent}'}
     tmp = target.with_suffix('.py.tmp')
     try:
         tmp.write_bytes(script_bytes)
         os.replace(tmp, target)
+        # Le shell utilise ce marker pour afficher la version chargée
+        # dans le statut + skipper le fetch si déjà à jour au prochain boot.
+        (target.parent / 'helper.version').write_text(new_version)
     except Exception as e:
         return {'updated': False, 'error': f'write failed: {e}'}
     return {
