@@ -40,6 +40,60 @@ fn spawn_helper(app: &AppHandle) -> Option<Child> {
     None
 }
 
+/// Make this process the ONLY helper on the machine: terminate any
+/// other running helper shell and any orphan `helper.py` a previous
+/// shell may have left holding port 49080.
+///
+/// Newest-wins by construction: we enumerate the process table once,
+/// at startup, so we only ever target processes that already existed
+/// before us. A helper launched *after* us isn't in our snapshot — and
+/// when it boots it runs this same sweep and retires us in turn. That
+/// avoids two concurrently-starting shells mutually SIGKILLing each
+/// other (the realistic launches — login autostart, a tray click, the
+/// dashboard's `redstars-helper://` button — are never simultaneous to
+/// the millisecond anyway).
+///
+/// We must run this BEFORE spawning our own python child, so the port
+/// is free when our helper.py binds it. We match two shapes, mirroring
+/// `scripts/preinst.sh`: the shell binary (by exe file name, robust to
+/// the 15-char `comm` truncation on Linux) and any python whose command
+/// line references `helper.py`.
+fn terminate_other_helpers() {
+    use sysinfo::{ProcessesToUpdate, System};
+
+    let self_pid = match sysinfo::get_current_pid() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    let our_name = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
+
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+
+    for (pid, proc_) in sys.processes() {
+        if *pid == self_pid {
+            continue;
+        }
+        let name = proc_.name().to_string_lossy().to_string();
+        let exe_name = proc_
+            .exe()
+            .and_then(|e| e.file_name())
+            .map(|n| n.to_string_lossy().to_string());
+        let is_shell = our_name.is_some()
+            && (our_name.as_deref() == Some(name.as_str()) || our_name == exe_name);
+        let is_helper_py = proc_
+            .cmd()
+            .iter()
+            .any(|a| a.to_string_lossy().ends_with("helper.py"));
+        if is_shell || is_helper_py {
+            eprintln!("[single] retiring prior helper pid={} ({})", pid, name);
+            proc_.kill();
+        }
+    }
+}
+
 /// Restart helper subprocess in place (kill + respawn). Used by the
 /// background updater after a new script version is cached, and by the
 /// tray "Restart helper" menu item.
@@ -109,6 +163,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![open_demo, restart_helper])
         .setup(|app| {
             let handle = app.handle().clone();
+
+            // Single-instance sweep: retire any other helper shell and
+            // free port 49080 from an orphan helper.py before we spawn
+            // ours. Newest launch wins; see terminate_other_helpers.
+            terminate_other_helpers();
 
             // First-run autostart enable. The plugin's `is_enabled` /
             // `enable` are idempotent; calling enable() on every run

@@ -1,6 +1,6 @@
 [package]
 name = "redstars-helper"
-version = "0.2.8"
+version = "0.2.9"
 description = "Redstars local helper agent"
 authors = ["Redstars"]
 edition = "2021"
@@ -33,6 +33,11 @@ serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls", "json"] }
 sha2 = "0.10"
 minisign-verify = "0.2"
+# Process enumeration for the startup single-instance sweep — find and
+# kill any prior helper shell / orphan helper.py before we spawn ours.
+# default-features off: we only need the process API, not CPU/disk/net
+# probes (keeps the release binary lean).
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 
 [profile.release]
 panic = "abort"
