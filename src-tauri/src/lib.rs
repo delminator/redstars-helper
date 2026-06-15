@@ -16,6 +16,21 @@ const HELPER_URL: &str = "http://localhost:49080/";
 
 struct HelperProc(Mutex<Option<Child>>);
 
+/// Build a `Command` for a python interpreter with the AppImage runtime's
+/// injected variables stripped. When we run inside an AppImage, AppRun exports
+/// LD_LIBRARY_PATH / PYTHONHOME / PYTHONPATH / LD_PRELOAD pointing into the
+/// bundle; a child *system* python3 then inherits them and fails to find its
+/// own stdlib ("No module named 'encodings'"). Removing them lets the system
+/// interpreter initialise normally. Harmless when not running as an AppImage
+/// (these are rarely set, and a system python needs none of them).
+fn clean_python_command(py: &str) -> Command {
+    let mut c = Command::new(py);
+    for var in ["LD_LIBRARY_PATH", "PYTHONHOME", "PYTHONPATH", "LD_PRELOAD"] {
+        c.env_remove(var);
+    }
+    c
+}
+
 /// Spawn helper.py from whichever copy is currently authoritative —
 /// dev-override > cached fetched from GitHub > bundled fallback. See
 /// `script_updater::current_script_path` for the resolution order.
@@ -32,8 +47,20 @@ fn spawn_helper(app: &AppHandle) -> Option<Child> {
         if py.starts_with('/') && !std::path::Path::new(&py).is_file() {
             continue;
         }
+        // Sanity-probe the interpreter first. A python can exec fine yet crash
+        // instantly at startup ("No module named 'encodings'") — either a
+        // pyenv shim with an incomplete env, or a system python3 poisoned by
+        // the AppImage runtime's injected vars (handled by clean_python_command
+        // below). `-c pass` exits 0 only when the interpreter really starts.
+        match clean_python_command(&py).arg("-c").arg("pass").output() {
+            Ok(out) if out.status.success() => {}
+            _ => {
+                eprintln!("[helper] {} failed sanity probe, skipping", py);
+                continue;
+            }
+        }
         eprintln!("[helper] trying {} {}", py, script.display());
-        if let Ok(child) = Command::new(&py).arg("-u").arg(&script).spawn() {
+        if let Ok(child) = clean_python_command(&py).arg("-u").arg(&script).spawn() {
             eprintln!("[helper] spawned via {}", py);
             return Some(child);
         }
@@ -61,7 +88,7 @@ fn spawn_helper(app: &AppHandle) -> Option<Child> {
 /// the 15-char `comm` truncation on Linux) and any python whose command
 /// line references `helper.py`.
 fn terminate_other_helpers() {
-    use sysinfo::{ProcessesToUpdate, System};
+    use sysinfo::{Pid, ProcessesToUpdate, System};
 
     let self_pid = match sysinfo::get_current_pid() {
         Ok(p) => p,
@@ -71,11 +98,37 @@ fn terminate_other_helpers() {
         .ok()
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()));
 
+    // Telling "a prior helper to retire" apart from "a process of our OWN just-
+    // launched AppImage" (runtime wrapper, AppRun, the squashfs FUSE-mount
+    // holder, the app binary) by name / pgid / mount / ancestor / APPIMAGE env
+    // all proved unreliable across AppImage's process layouts — and getting it
+    // wrong makes the agent kill its own mount holder and SIGBUS-crash on
+    // launch. The one robust signal is AGE: our whole launch tree starts within
+    // a second or two of us, while a genuinely prior instance is many seconds —
+    // usually minutes — older. So we only ever retire helpers that started
+    // clearly before us.
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
 
+    let self_start = sys.process(self_pid).map(|p| p.start_time());
+
+    let mut protected: std::collections::HashSet<Pid> = std::collections::HashSet::new();
+    protected.insert(self_pid);
+    let mut cur = self_pid;
+    while let Some(parent) = sys.process(cur).and_then(|p| p.parent()) {
+        if !protected.insert(parent) {
+            break; // cycle guard
+        }
+        cur = parent;
+    }
+
+    // Grace window covering the spread of our own launch tree's start times
+    // (mount + fork + exec). Anything younger than this is treated as part of
+    // us, not a prior instance.
+    const GRACE_SECS: u64 = 10;
+
     for (pid, proc_) in sys.processes() {
-        if *pid == self_pid {
+        if protected.contains(pid) {
             continue;
         }
         let name = proc_.name().to_string_lossy().to_string();
@@ -89,10 +142,25 @@ fn terminate_other_helpers() {
             .cmd()
             .iter()
             .any(|a| a.to_string_lossy().ends_with("helper.py"));
-        if is_shell || is_helper_py {
-            eprintln!("[single] retiring prior helper pid={} ({})", pid, name);
-            proc_.kill();
+        if !(is_shell || is_helper_py) {
+            continue;
         }
+        // Age gate: skip anything that started within GRACE of us — that's our
+        // own AppImage tree, not a prior instance.
+        if let Some(ours) = self_start {
+            if proc_.start_time() + GRACE_SECS > ours {
+                continue;
+            }
+            eprintln!(
+                "[single] retiring prior helper pid={} ({}) — {}s older than us",
+                pid,
+                name,
+                ours.saturating_sub(proc_.start_time())
+            );
+        } else {
+            eprintln!("[single] retiring prior helper pid={} ({})", pid, name);
+        }
+        proc_.kill();
     }
 }
 

@@ -198,12 +198,22 @@ fn sweep_dead_autostart() {
         if !refers_to_us {
             continue;
         }
-        // Resolve the Exec/TryExec target binary.
+        // Resolve the Exec/TryExec target binary. The path may be double-quoted
+        // when it contains spaces (e.g. "…/Redstars Helper_0.3.0.AppImage") —
+        // a naive whitespace split would truncate it to a non-existent prefix
+        // and wrongly flag the live entry as dead, deleting our own autostart.
         let target = content
             .lines()
             .find_map(|l| l.strip_prefix("Exec=").or_else(|| l.strip_prefix("TryExec=")))
-            .and_then(|cmd| cmd.split_whitespace().next())
-            .map(PathBuf::from);
+            .map(|cmd| {
+                let cmd = cmd.trim();
+                let path = if let Some(rest) = cmd.strip_prefix('"') {
+                    rest.split('"').next().unwrap_or(rest) // up to closing quote
+                } else {
+                    cmd.split_whitespace().next().unwrap_or(cmd) // first token
+                };
+                PathBuf::from(path)
+            });
         let dead = matches!(target, Some(ref t) if !t.exists());
         if dead {
             remove_logged(&path, "dead autostart entry");
