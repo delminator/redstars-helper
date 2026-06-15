@@ -8,7 +8,8 @@ LAN, private window) without CORS dance.
 Endpoints (all under /helper):
   GET  /helper/status         →  {"ok": true, "version": "..."}
   GET  /helper/lsusb          →  {"devices": [{bus, device, id, name}, ...]}
-  GET  /helper/scale          →  latest scale reading (cached)
+  GET  /helper/scale          →  scale reading (on-demand; the serial port is
+                                  opened only while the page keeps polling)
   POST /helper/enable-webgpu  →  appends WebGPU prefs to Firefox user.js
   POST /helper/reset-webgpu   →  removes WebGPU prefs
   POST /helper/redEC          →  body = binary file ; → {hash_hex, level} (auto Red1..Red4)
@@ -42,7 +43,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.21'
+VERSION = '0.5.22'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -131,69 +132,138 @@ SCALE_LINE = re.compile(r'(?P<status>[A-Z]{2,4})\s*(?P<sign>[+-])(?P<value>\d+(?
 
 
 class ScaleReader:
-    """Background thread reading the scale's serial output and caching the
-    latest stable value. /scale endpoint just returns the cache.
+    """On-demand serial scale reader. There is NO 24/7 background polling: the
+    serial port is opened lazily on the first /scale request and kept open only
+    while the page keeps requesting. A single self-rescheduling idle timer (one
+    wake every IDLE_CLOSE_SECS, ONLY while in use) closes the port a few seconds
+    after the last read, so the helper goes fully dormant — zero threads, zero
+    wakeups — when the scale isn't being used. The web page drives the cadence
+    (poll ~1/s while the weighing screen is open).
 
-    Auto-reconnects if the serial port disappears (unplug/replug).
+    Cheap CH340 scales stream weight lines continuously while powered, so each
+    read drains the serial buffer and returns the freshest line.
     """
+    IDLE_CLOSE_SECS = 5
+
     def __init__(self, port=SCALE_PORT, baud=SCALE_BAUD):
         self.port = port
         self.baud = baud
         self.lock = threading.Lock()
-        self.state = {
+        self._ser = None
+        self._timer = None
+        self._last_request = 0.0
+        self._last = {
             'connected': False, 'value': None, 'unit': None, 'sign': None,
             'status': None, 'raw': None, 'updated_at': None, 'error': None,
         }
-        self._stop = threading.Event()
-        threading.Thread(target=self._run, daemon=True).start()
 
-    def _set(self, **kw):
-        with self.lock:
-            self.state.update(kw)
-
-    def get(self):
-        with self.lock:
-            return dict(self.state)
-
-    def _run(self):
-        try:
-            import serial
-        except ImportError:
-            self._set(error='pyserial not installed (pip install --user pyserial)')
-            return
-        while not self._stop.is_set():
+    # --- port lifecycle (caller holds self.lock) -------------------------
+    def _close(self):
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+        if self._ser is not None:
             try:
-                with serial.Serial(self.port, self.baud, timeout=1) as ser:
-                    self._set(connected=True, error=None)
-                    while not self._stop.is_set():
-                        raw = ser.readline().decode('ascii', errors='replace').strip()
-                        if not raw:
-                            continue
-                        m = SCALE_LINE.search(raw)
-                        if m:
-                            sign = -1 if m.group('sign') == '-' else 1
-                            self._set(
-                                connected=True,
-                                value=sign * float(m.group('value')),
-                                unit=(m.group('unit') or 'g').lower(),
-                                sign=m.group('sign'),
-                                status=m.group('status'),
-                                raw=raw,
-                                updated_at=time.time(),
-                                error=None,
-                            )
-                        else:
-                            # Boot messages, blank lines, etc — keep raw for debug
-                            self._set(raw=raw, updated_at=time.time(), error=None)
-            except FileNotFoundError:
-                self._set(connected=False, error=f'{self.port} not present (scale unplugged?)')
-                time.sleep(2)
-            except PermissionError:
-                self._set(connected=False, error=f'{self.port} permission denied (udev rule?)')
-                time.sleep(5)
+                self._ser.close()
+            except Exception:
+                pass
+            self._ser = None
+
+    def _arm_timer(self):
+        t = threading.Timer(self.IDLE_CLOSE_SECS, self._on_timer)
+        t.daemon = True
+        self._timer = t
+        t.start()
+
+    def _on_timer(self):
+        # Close if no read happened recently; otherwise keep watching. This is
+        # the ONLY recurring wake, and only while the scale is actively in use.
+        with self.lock:
+            self._timer = None
+            if time.time() - self._last_request >= self.IDLE_CLOSE_SECS:
+                self._close()
+            else:
+                self._arm_timer()
+
+    # --- public API ------------------------------------------------------
+    def read(self):
+        """Open on demand, drain to the freshest line, return the reading.
+        The port auto-closes IDLE_CLOSE_SECS after the last call."""
+        with self.lock:
+            self._last_request = time.time()
+            if self._ser is None:
+                try:
+                    import serial
+                except ImportError:
+                    self._last = dict(self._last, connected=False,
+                                      error='pyserial not installed (pip install --user pyserial)')
+                    return dict(self._last)
+                try:
+                    self._ser = serial.Serial(self.port, self.baud, timeout=0.4)
+                except FileNotFoundError:
+                    self._last = dict(self._last, connected=False,
+                                      error=f'{self.port} not present (scale unplugged?)')
+                    return dict(self._last)
+                except PermissionError:
+                    self._last = dict(self._last, connected=False,
+                                      error=f'{self.port} permission denied (udev rule?)')
+                    return dict(self._last)
+                except Exception as e:
+                    self._last = dict(self._last, connected=False,
+                                      error=type(e).__name__ + ': ' + str(e))
+                    return dict(self._last)
+            ser = self._ser
+            try:
+                latest_raw = None
+                latest_m = None
+                # Drain everything buffered so we return the FRESHEST line.
+                while ser.in_waiting:
+                    raw = ser.readline().decode('ascii', errors='replace').strip()
+                    if not raw:
+                        continue
+                    latest_raw = raw
+                    m = SCALE_LINE.search(raw)
+                    if m:
+                        latest_m = m
+                if latest_raw is None:
+                    # Nothing buffered yet — one short blocking read.
+                    raw = ser.readline().decode('ascii', errors='replace').strip()
+                    if raw:
+                        latest_raw = raw
+                        latest_m = SCALE_LINE.search(raw)
             except Exception as e:
-                self._set(connected=False, error=type(e).__name__ + ': ' + str(e))
-                time.sleep(2)
+                self._close()
+                self._last = dict(self._last, connected=False,
+                                  error=type(e).__name__ + ': ' + str(e))
+                return dict(self._last)
+
+            if latest_m:
+                sign = -1 if latest_m.group('sign') == '-' else 1
+                self._last = {
+                    'connected': True,
+                    'value': sign * float(latest_m.group('value')),
+                    'unit': (latest_m.group('unit') or 'g').lower(),
+                    'sign': latest_m.group('sign'),
+                    'status': latest_m.group('status'),
+                    'raw': latest_raw,
+                    'updated_at': time.time(),
+                    'error': None,
+                }
+            elif latest_raw is not None:
+                # Boot message / blank — keep raw for debug, mark connected.
+                self._last = dict(self._last, connected=True, raw=latest_raw,
+                                  updated_at=time.time(), error=None)
+            else:
+                # Port open but no data this round — keep last value.
+                self._last = dict(self._last, connected=True, error=None)
+
+            if self._timer is None:
+                self._arm_timer()
+            return dict(self._last)
+
+    # Back-compat alias (old callers used .get()).
+    def get(self):
+        return self.read()
 
 
 SCALE = ScaleReader()
@@ -865,7 +935,7 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json(500, {'error': f'{type(e).__name__}: {e}'})
             return
         if ep == '/scale':
-            state = SCALE.get()
+            state = SCALE.read()
             if state.get('updated_at'):
                 state['age_ms'] = int((time.time() - state['updated_at']) * 1000)
             self._json(200, state)
@@ -1609,7 +1679,11 @@ class Handler(SimpleHTTPRequestHandler):
 def _serve_thread(server, label):
     print(f'  {label}: ready')
     try:
-        server.serve_forever()
+        # poll_interval=30 (default 0.5): serve_forever wakes only to re-check
+        # an internal shutdown flag we never set (the helper exits via signal /
+        # process kill, not server.shutdown()). A long interval keeps the agent
+        # dormant — a few wakeups per minute instead of ~2/s — when idle.
+        server.serve_forever(poll_interval=30)
     except Exception as e:
         print(f'  {label} crashed: {e}')
 
@@ -1648,7 +1722,7 @@ def main():
     else:
         print('  HTTPS: skipped — no cert.pem/key.pem on disk and embedded fallback failed')
     try:
-        http_srv.serve_forever()
+        http_srv.serve_forever(poll_interval=30)  # see _serve_thread: stay dormant when idle
     except KeyboardInterrupt:
         print('\nbye')
 
