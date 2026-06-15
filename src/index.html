@@ -43,8 +43,8 @@ small { color: #666; display: block; margin-top: 16px; font-size: 0.8em; }
   </div>
 
   <div style="margin-top:16px;">
-    <div class="endpoint">http://localhost:8080/</div>
-    <div class="endpoint">http://localhost:8080/helper/status</div>
+    <div class="endpoint">http://localhost:49080/</div>
+    <div class="endpoint">http://localhost:49080/helper/status</div>
   </div>
 
   <div style="margin-top:24px;">
@@ -57,14 +57,16 @@ small { color: #666; display: block; margin-top: 16px; font-size: 0.8em; }
 
 <script type="module">
 import { invoke } from "https://esm.sh/@tauri-apps/api@2/core";
+import { getVersion } from "https://esm.sh/@tauri-apps/api@2/app";
 import { check } from "https://esm.sh/@tauri-apps/plugin-updater@2";
+import { relaunch } from "https://esm.sh/@tauri-apps/plugin-process@2";
 
 async function poll() {
   try {
-    const r = await fetch('http://localhost:8080/helper/status', { signal: AbortSignal.timeout(800) });
+    const r = await fetch('http://localhost:49080/helper/status', { signal: AbortSignal.timeout(800) });
     const ok = r.ok;
     document.getElementById('serverStatus').className = 'status ' + (ok ? 'up' : 'down');
-    document.getElementById('statusText').textContent = ok ? 'helper running on :8080' : 'helper not responding';
+    document.getElementById('statusText').textContent = ok ? 'helper running on :49080' : 'helper not responding';
   } catch {
     document.getElementById('serverStatus').className = 'status down';
     document.getElementById('statusText').textContent = 'helper offline';
@@ -75,16 +77,40 @@ poll(); setInterval(poll, 2000);
 window.openBrowser = () => invoke('open_demo');
 window.restartHelper = () => invoke('restart_helper');
 
-// Optional updater check on mount
-(async () => {
+// Shell auto-update. Tauri v2's check() resolves to an Update object when
+// a newer signed release is available (or null when up-to-date). Unlike the
+// previous build — which only displayed a label and never installed — we now
+// actually download + install + relaunch. Runs at startup and re-checks
+// every 6 h to mirror the helper.py script poller, so an always-on agent
+// picks up shell releases without waiting for a manual restart.
+//
+// NB: on Linux only the AppImage can self-replace; .deb/.rpm installs are
+// owned by the system package manager and downloadAndInstall() will report
+// an error there (caught + logged, helper keeps running on the old shell).
+let CURRENT_VERSION = '?';
+getVersion().then(v => {
+  CURRENT_VERSION = v;
+  document.getElementById('versionInfo').textContent =
+    `v${v} — auto-updates from GitHub releases`;
+}).catch(() => {});
+
+async function checkForShellUpdate() {
   try {
     const update = await check();
-    if (update?.available) {
-      document.getElementById('versionInfo').textContent =
-        `v0.1.0 → v${update.version} available — install on quit`;
-    }
-  } catch {}
-})();
+    if (!update) return;
+    const info = document.getElementById('versionInfo');
+    info.textContent = `v${CURRENT_VERSION} → v${update.version} — downloading…`;
+    await update.downloadAndInstall((event) => {
+      if (event.event === 'Progress') info.textContent = `installing v${update.version}…`;
+    });
+    info.textContent = `v${update.version} installed — restarting…`;
+    await relaunch();
+  } catch (e) {
+    console.error('[shell-updater]', e);
+  }
+}
+checkForShellUpdate();
+setInterval(checkForShellUpdate, 6 * 3600 * 1000);
 </script>
 </body>
 </html>

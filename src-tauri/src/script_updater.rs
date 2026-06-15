@@ -33,7 +33,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use tauri::{AppHandle, Manager};
 
-const DEFAULT_API_BASE: &str = "https://dev.redstars.redlinks.fr";
+const DEFAULT_API_BASE: &str = "https://api.dev.redstars.redlinks.fr";
 const SCRIPT_NAME: &str = "helper.py";
 const SHELL_VERSION: &str = env!("CARGO_PKG_VERSION");
 const FETCH_TIMEOUT_SECS: u64 = 8;

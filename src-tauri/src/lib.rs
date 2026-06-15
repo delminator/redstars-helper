@@ -1,13 +1,15 @@
 // Library entry — main.rs delegates to run() so cargo can build both a
 // binary (Linux/Mac) and a static lib (mobile platforms).
 
+mod cleanup;
 mod script_updater;
+mod shell_updater;
 
 use std::process::{Child, Command};
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, State, WindowEvent};
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 
 const HELPER_URL: &str = "http://localhost:49080/";
@@ -152,9 +154,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         // Autostart at session login (XDG autostart / login items / registry
-        // depending on OS). We pass `--minimized` so the window stays hidden
-        // and the user only sees the tray icon — same UX as on a manual
-        // launch via the tray.
+        // depending on OS). The helper is a windowless tray agent — there's
+        // nothing to show on launch, it just appears in the system tray.
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--minimized"]),
@@ -163,6 +164,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![open_demo, restart_helper])
         .setup(|app| {
             let handle = app.handle().clone();
+
+            // Windowless tray agent: on macOS hide the Dock icon so we are a
+            // pure background item (no-op / not present on Linux + Windows).
+            #[cfg(target_os = "macos")]
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
             // Single-instance sweep: retire any other helper shell and
             // free port 49080 from an orphan helper.py before we spawn
@@ -182,10 +188,12 @@ pub fn run() {
                 }
             }
 
-            // Boot-time sweep: drop orphan refs/iso symlink mounts and
-            // stale .tmp from a previous run (the previous helper process
-            // is dead by definition — it can't be holding any of this).
-            script_updater::cleanup_runtime_state(&handle);
+            // Boot-time cleanup: data-dir cruft + stale old-version artefacts
+            // (old AppImage siblings, old downloaded packages, dead autostart
+            // entries). Runs AFTER the autostart enable above so the current,
+            // live entry is never mistaken for a leftover. Conservative and
+            // best-effort — see cleanup.rs.
+            cleanup::run(&handle);
 
             // Pull the latest helper.py from GitHub before we spawn it.
             // Sync call with a short timeout — if GitHub is slow we fall
@@ -203,11 +211,18 @@ pub fn run() {
                 restart_helper_proc(app);
             });
 
+            // Shell self-update (the Tauri binary itself): check now + every
+            // 6 h. Moved out of the now-removed webview into Rust so this
+            // windowless tray agent keeps itself current. See shell_updater.rs.
+            shell_updater::check_now(&handle);
+            shell_updater::start_poller(handle.clone());
+
             let menu = Menu::with_items(
                 app,
                 &[
                     &MenuItem::with_id(app, "open", "Open demo", true, None::<&str>)?,
                     &MenuItem::with_id(app, "restart", "Restart helper", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "update", "Check for updates", true, None::<&str>)?,
                     &MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?,
                 ],
             )?;
@@ -223,22 +238,26 @@ pub fn run() {
                         let _ = script_updater::fetch_and_cache(app);
                         restart_helper_proc(app);
                     }
+                    "update" => { shell_updater::check_now(app); }
                     "quit" => { app.exit(0); }
                     _ => {}
                 })
                 .build(app)?;
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                window.hide().ok();
-                api.prevent_close();
-            }
-        })
         .build(tauri::generate_context!())
         .expect("error while building tauri app")
         .run(|app, event| {
-            if let tauri::RunEvent::ExitRequested { .. } = event {
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+                // Tray-only agent: there are no windows, so a code-less exit
+                // request is spurious (e.g. a stray "last window closed") —
+                // keep running. An explicit quit from the tray uses
+                // app.exit(0) (code = Some) and is allowed through, tearing
+                // down the helper subprocess on the way out.
+                if code.is_none() {
+                    api.prevent_exit();
+                    return;
+                }
                 let s = app.state::<HelperProc>();
                 let mut g = s.0.lock().unwrap();
                 if let Some(mut c) = g.take() {
