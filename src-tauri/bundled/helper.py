@@ -43,7 +43,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.22'
+VERSION = '0.5.23'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -106,19 +106,57 @@ ALLOWED_ORIGINS = {
 # Codec autoencoder (redEC/redDEC) — chargement paresseux à la 1ʳᵉ requête /helper/redEC ou /redDEC.
 # Permet au helper de démarrer même sans torch/numpy installés ; les routes renvoient une erreur
 # claire si la dépendance manque.
-_CODEC = {'loaded': False, 'redEC_chain': None, 'redDEC': None, 'err': None}
+_CODEC = {'loaded': False, 'redEC_chain': None, 'redDEC': None,
+          'encode_file': None, 'decode_file': None, 'backend': None,
+          'cascade_err': None, 'err': None}
+
+def _codec_dirs():
+    """Dirs that may hold the codec assets. helper.py auto-updates to the OS cache
+    dir (only helper.py there), so beyond DEMO_DIR we probe the env hint + the OS
+    bundle (rpm/deb productName dir, /opt, AppImage mount, macOS .app)."""
+    import glob as _glob
+    cands = [DEMO_DIR]
+    env = os.environ.get('REDSTARS_HELPER_BUNDLED_DIR')
+    if env:
+        cands.append(Path(env))
+    for pat in (
+        '/usr/lib/*/bundled/codec_onnx.py', '/usr/lib/*/resources/bundled/codec_onnx.py',
+        '/usr/share/*/bundled/codec_onnx.py', '/opt/*/bundled/codec_onnx.py',
+        '/tmp/.mount_*/usr/lib/*/bundled/codec_onnx.py',
+        '/Applications/*.app/Contents/Resources/bundled/codec_onnx.py',
+        str(Path.home() / 'Applications' / '*.app' / 'Contents' / 'Resources' / 'bundled' / 'codec_onnx.py'),
+    ):
+        for hit in _glob.glob(pat):
+            cands.append(Path(hit).parent)
+    return cands
 
 def _ensure_codec():
     if _CODEC['loaded'] or _CODEC['err']:
         return _CODEC['err']
     try:
         import sys as _sys
-        if str(DEMO_DIR) not in _sys.path:
-            _sys.path.insert(0, str(DEMO_DIR))
-        from redEC import redEC_chain
-        from redDEC import redDEC
-        _CODEC['redEC_chain'] = redEC_chain
-        _CODEC['redDEC'] = redDEC
+        for d in _codec_dirs():
+            if (d / 'codec_onnx.py').is_file() or (d / 'codec_numpy.py').is_file() or (d / 'redEC.py').is_file():
+                if str(d) not in _sys.path:
+                    _sys.path.insert(0, str(d))
+                break
+        # Codec lossless PORTABLE (sidecar de correction → bit-exact) : ONNX (rapide,
+        # multi-thread CPU, sans torch) → numpy (secours si pas d'onnxruntime).
+        try:
+            import codec_onnx as _cf; _CODEC['backend'] = 'onnx'
+        except Exception:
+            import codec_numpy as _cf; _CODEC['backend'] = 'numpy'
+        _CODEC['encode_file'] = _cf.encode_file
+        _CODEC['decode_file'] = _cf.decode_file
+        # Cascade redEC/redDEC (1 hash ↔ 1024) — OPTIONNELLE, nécessite torch. Si torch
+        # absent (machine portable), le blob lossless marche quand même.
+        try:
+            from redEC import redEC_chain
+            from redDEC import redDEC
+            _CODEC['redEC_chain'] = redEC_chain
+            _CODEC['redDEC'] = redDEC
+        except Exception as _te:
+            _CODEC['cascade_err'] = f'{type(_te).__name__}: {_te}'
         _CODEC['loaded'] = True
         return None
     except Exception as e:
@@ -353,6 +391,124 @@ def _job_set(job_id: str, **kw):
         if job_id in JOBS:
             JOBS[job_id].update(kw)
 
+
+# --- File-codec blob store (the tested lossless chain: codec.py + sidecar) ----
+# Save  : files → make_iso → encode_file → blob (RSN1 + patch trailer) persisted here.
+# Restore: blob → decode_file → iso → mount. The blob is the shareable artifact
+# (~source size, lossless 1:1 — NOT a tiny hash; no contraction, no dropping).
+BLOB_DIR = (Path(os.environ.get('XDG_CACHE_HOME') or os.path.expanduser('~/.cache'))
+            / 'redstars-helper' / 'blobs')
+
+def _iso_payload_from_paths(abs_paths):
+    used, payload, files_meta = set(), {}, []
+    for src in abs_paths:
+        nm = Path(src).name
+        if nm in used:
+            base, ext = os.path.splitext(nm); i = 1
+            while f'{base}-{i}{ext}' in used: i += 1
+            nm = f'{base}-{i}{ext}'
+        used.add(nm); payload[nm] = src
+        files_meta.append({'name': nm, 'size': os.path.getsize(src)})
+    return payload, files_meta
+
+def _codec_encode_worker(job_id, abs_paths, label):
+    """ISO → blob lossless (codec_file_torch) + CASCADE redEC → 1 hash unique.
+    Le hash est la contraction redEC (les 1024 hashes → 1), miroir de redDEC ; on
+    le remonte via /redDEC-chain (1 hash → 1024 → … → 1 Go). Contraction lossy sur
+    données arbitraires (assumé pour l'instant) — le blob reste l'artefact exact."""
+    try:
+        payload, files_meta = _iso_payload_from_paths(abs_paths)
+        iso_path = make_iso(label, payload=payload)
+        # Tamponner la zone système ISO (1024 o de tête, ignorée par les lecteurs ISO)
+        # avec un en-tête NON-NUL dérivé du contenu → redEC_chain sort un hash non-nul
+        # ET distinct par disque (sinon l'ISO commence par des zéros → hash nul).
+        import hashlib as _hl
+        sig = _hl.sha256(repr(files_meta).encode() + label.encode()).digest()
+        stamp = (b'RSDISK1\x00' + sig + label.encode()[:48]).ljust(1024, b'\xa5')[:1024]
+        with open(iso_path, 'r+b') as f:
+            f.seek(0); f.write(stamp)
+        source_bytes = iso_path.stat().st_size
+        BLOB_DIR.mkdir(parents=True, exist_ok=True)
+        blob_id = uuid.uuid4().hex[:16]
+        blob_path = BLOB_DIR / f'{blob_id}.rsn'
+        _, n_patches = _CODEC['encode_file'](str(iso_path), str(blob_path))   # lossless (ISO tamponnée)
+        # CASCADE redEC : ISO (1024 hashes/blocs) → 1 hash unique (Red1..Red4).
+        # OPTIONNELLE : nécessite torch. Sans torch, on ne fournit que le blob.
+        share = {}
+        if not _CODEC.get('redEC_chain'):
+            share = {'share_error': 'cascade indisponible (torch absent — blob seul)'}
+        else:
+            try:
+                import tempfile as _tf
+                out_h = Path(_tf.gettempdir()) / f'redec-{uuid.uuid4().hex[:8]}.bin'
+                lvl, h, insize = _CODEC['redEC_chain'](iso_path, out_h)
+                share = {'share_hash_hex': h.hex(), 'share_level': lvl, 'share_bundle': insize}
+                try: out_h.unlink(missing_ok=True)
+                except Exception: pass
+            except Exception as e:
+                share = {'share_error': f'{type(e).__name__}: {e}'}
+        try: iso_path.unlink(missing_ok=True)
+        except Exception: pass
+        _job_set(job_id, status='done', progress=1.0, done_at=time.time(), result={
+            'blob_id': blob_id,
+            'blob_bytes': blob_path.stat().st_size,
+            'source_bytes': source_bytes,
+            'patches': n_patches,
+            'n_files': len(files_meta),
+            'files': files_meta,
+            'label': label,
+            **share,
+        })
+    except Exception as e:
+        _job_set(job_id, status='failed', done_at=time.time(), error=f'{type(e).__name__}: {e}')
+
+def _decode_blob_and_mount(blob_path, label):
+    """decode_file(blob) → iso → mount. Returns the MountInfo-shaped result dict."""
+    ISO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    iso_id = uuid.uuid4().hex[:12]
+    iso_path = ISO_CACHE_DIR / f'{iso_id}.iso'
+    _CODEC['decode_file'](str(blob_path), str(iso_path))
+    mount_path, dev, mount_error = None, None, None
+    try:
+        mount_path, dev = mount_iso(iso_path)
+        MOUNTED[iso_id] = {'iso_path': str(iso_path), 'mount_path': mount_path,
+                           'dev': dev, 'label': label or 'BUNDLE', 'created_at': time.time()}
+    except Exception as e:
+        mount_error = f'{type(e).__name__}: {e}'
+    result = {'id': iso_id, 'iso_path': str(iso_path), 'mount_path': mount_path,
+              'label': label or 'BUNDLE', 'output_size': iso_path.stat().st_size,
+              'entries': list_mount(mount_path) if mount_path else []}
+    if mount_error: result['mount_error'] = mount_error
+    return result
+
+def _codec_restore_worker(job_id, blob_id, label):
+    """blob (par id, stocké helper-side) → decode → mount."""
+    try:
+        blob_path = BLOB_DIR / f'{blob_id}.rsn'
+        if not blob_path.is_file():
+            _job_set(job_id, status='failed', done_at=time.time(), error=f'no such blob: {blob_id}'); return
+        _job_set(job_id, status='done', progress=1.0, done_at=time.time(),
+                 result=_decode_blob_and_mount(blob_path, label))
+    except Exception as e:
+        _job_set(job_id, status='failed', done_at=time.time(), error=f'{type(e).__name__}: {e}')
+
+def _codec_restore_data_worker(job_id, blob_bytes, label):
+    """blob collé (base64, venu d'ailleurs) → decode → mount. Pour tester un blob
+    encodé sur une autre machine sans qu'il soit déjà dans le store local."""
+    try:
+        if blob_bytes[:4] != b'RSN1':
+            _job_set(job_id, status='failed', done_at=time.time(), error='blob invalide (magic ≠ RSN1)'); return
+        BLOB_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = BLOB_DIR / f'paste-{uuid.uuid4().hex[:12]}.rsn'
+        tmp.write_bytes(blob_bytes)
+        try:
+            _job_set(job_id, status='done', progress=1.0, done_at=time.time(),
+                     result=_decode_blob_and_mount(tmp, label))
+        finally:
+            try: tmp.unlink(missing_ok=True)
+            except Exception: pass
+    except Exception as e:
+        _job_set(job_id, status='failed', done_at=time.time(), error=f'{type(e).__name__}: {e}')
 
 def _redDEC_chain_worker(job_id: str, hash_hex: str, level: int,
                          name: str, target_size):
@@ -916,6 +1072,25 @@ class Handler(SimpleHTTPRequestHandler):
                 snapshot = dict(job)
             self._json(200, snapshot)
             return
+        if ep == '/codec/blob':
+            # GET /codec/blob?id=<blob_id> — récupère le blob encodé pour le tester
+            # ailleurs. base64 si petit (≤256 Ko → copiable/QR), sinon taille + chemin.
+            blob_id = (query.get('id', ['']) or [''])[0]
+            if not re.fullmatch(r'[0-9a-f]{8,32}', blob_id):
+                self._json(400, {'error': 'id required (hex)'}); return
+            bp = BLOB_DIR / f'{blob_id}.rsn'
+            if not bp.is_file():
+                self._json(404, {'error': f'no such blob: {blob_id}'}); return
+            sz = bp.stat().st_size
+            # ≤8 Mo → base64 copiable (clipboard). Au-delà → trop gros, on rend
+            # juste le chemin (le blob est un fichier à copier tel quel). QR jamais
+            # possible : une ISO fait ≥376 Ko, un QR plafonne ~3 Ko.
+            if sz > 8 * 1024 * 1024:
+                self._json(200, {'ok': True, 'blob_id': blob_id, 'blob_bytes': sz,
+                                 'too_big': True, 'path': str(bp)}); return
+            import base64 as _b64
+            self._json(200, {'ok': True, 'blob_id': blob_id, 'blob_bytes': sz,
+                             'blob_b64': _b64.b64encode(bp.read_bytes()).decode('ascii')}); return
         if ep == '/disk':
             # Espace dispo sur la partition qui hébergera les sorties.
             # ?path=<…> ou défaut = le cache redstars-helper (= là où
@@ -1369,6 +1544,65 @@ class Handler(SimpleHTTPRequestHandler):
                     'iso': iso_info,
                 })
             return
+
+        if ep == '/codec/encode':
+            # Save : files → make_iso → encode_file → blob (lossless). Async job.
+            err = _ensure_codec()
+            if err:
+                self._json(500, {'error': f'codec load failed: {err}', 'hint': 'pip install torch numpy'}); return
+            body  = self._read_json()
+            paths = body.get('paths') or []
+            label = (body.get('label') or 'REDSTARS')[:32]
+            if not paths:
+                self._json(400, {'error': 'paths required'}); return
+            abs_paths = []
+            for p in paths:
+                src = os.path.normpath(os.path.abspath(p))
+                allowed = any(
+                    src == os.path.normpath(os.path.abspath(info['dir_path'])) or
+                    src.startswith(os.path.normpath(os.path.abspath(info['dir_path'])) + os.sep)
+                    for info in REFS.values())
+                if not allowed:
+                    self._json(403, {'error': f'path not under any active /refs/ mount: {p}'}); return
+                if not os.path.isfile(src):
+                    self._json(404, {'error': f'no such file: {src}'}); return
+                abs_paths.append(src)
+            job_id = _new_job('codec-encode')
+            threading.Thread(target=_codec_encode_worker, args=(job_id, abs_paths, label), daemon=True).start()
+            self._json(200, {'job_id': job_id}); return
+
+        if ep == '/codec/restore':
+            # Remonter : blob → decode_file → iso → mount (lossless). Async job.
+            err = _ensure_codec()
+            if err:
+                self._json(500, {'error': f'codec load failed: {err}', 'hint': 'pip install torch numpy'}); return
+            body    = self._read_json()
+            blob_id = (body.get('blob_id') or '').strip()
+            label   = (body.get('label') or 'BUNDLE')[:32]
+            if not re.fullmatch(r'[0-9a-f]{8,32}', blob_id):
+                self._json(400, {'error': 'blob_id required (hex)'}); return
+            job_id = _new_job('codec-restore')
+            threading.Thread(target=_codec_restore_worker, args=(job_id, blob_id, label), daemon=True).start()
+            self._json(200, {'job_id': job_id}); return
+
+        if ep == '/codec/restore-data':
+            # Remonter un blob COLLÉ (base64, encodé ailleurs). Async job.
+            err = _ensure_codec()
+            if err:
+                self._json(500, {'error': f'codec load failed: {err}', 'hint': 'pip install torch numpy'}); return
+            body  = self._read_json()
+            b64   = (body.get('blob_b64') or '').strip()
+            label = (body.get('label') or 'BUNDLE')[:32]
+            import base64 as _b64
+            try:
+                data = _b64.b64decode(b64, validate=True)
+            except Exception:
+                self._json(400, {'error': 'blob_b64 invalide (base64)'}); return
+            if len(data) < 12 or data[:4] != b'RSN1':
+                self._json(400, {'error': 'blob invalide (magic ≠ RSN1)'}); return
+            job_id = _new_job('codec-restore-data')
+            threading.Thread(target=_codec_restore_data_worker, args=(job_id, data, label), daemon=True).start()
+            self._json(200, {'job_id': job_id}); return
 
         if ep == '/redDEC':
             err = _ensure_codec()
