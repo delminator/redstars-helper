@@ -79,7 +79,7 @@ def decode(blob: bytes) -> bytes:
     return bytes(out)
 
 
-def encode_file(in_path, out_path, batch: int = 4096):
+def encode_file(in_path, out_path, batch: int = 512):
     n = os.path.getsize(in_path)
     patches, goff = [], 0
     with open(in_path, "rb") as fi, open(out_path, "wb") as fo:
@@ -102,7 +102,7 @@ def encode_file(in_path, out_path, batch: int = 4096):
     return n, len(patches)
 
 
-def decode_file(in_path, out_path, batch: int = 4096):
+def decode_file(in_path, out_path, batch: int = 512):
     with open(in_path, "rb") as fi:
         head = fi.read(HEADER)
         n = int.from_bytes(head[4:HEADER], "big")

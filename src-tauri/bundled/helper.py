@@ -34,6 +34,7 @@ import re
 import shutil
 import socket
 import ssl
+import struct
 import subprocess
 import tarfile
 import threading
@@ -43,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.23'
+VERSION = '0.5.24'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -360,6 +361,96 @@ def parse_lsusb_line(line):
 #   Windows → powershell Mount-DiskImage
 
 ISO_CACHE_DIR = Path.home() / '.cache' / 'redstars-helper' / 'iso'
+
+
+def _save_dir():
+    """Dossier où enregistrer les fichiers extraits, accessible à l'utilisateur.
+    Android : Android/data/com.redstars.app/files/RedStars (USB / gestionnaire de
+    fichiers, sans permission). Desktop : ~/Téléchargements (ou ~/Downloads)."""
+    env = os.environ.get('REDSTARS_HELPER_SAVE_DIR')
+    if env:
+        d = Path(env)
+    elif os.environ.get('REDSTARS_HELPER_PLATFORM') == 'android':
+        ext = Path('/storage/emulated/0/Android/data/com.redstars.app/files/RedStars')
+        try:
+            ext.mkdir(parents=True, exist_ok=True)
+            t = ext / '.wtest'; t.write_text('x'); t.unlink()   # test d'écriture
+            d = ext
+        except Exception:
+            d = Path(os.environ.get('XDG_CACHE_HOME') or os.path.expanduser('~')) / 'RedStars'
+    else:
+        dl = Path(os.path.expanduser('~/Téléchargements'))
+        d = (dl if dl.is_dir() else Path(os.path.expanduser('~/Downloads'))) / 'RedStars'
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+# --- Lecteur ISO9660(+Joliet) PUR PYTHON inliné (auto-update sans module séparé) ---
+# Liste/extrait les fichiers à la racine d'un ISO make_iso (xorrisofs -R -J),
+# sans monter ni binaire externe, en seek (gros ISO ok).
+_ISO_SECTOR = 2048
+
+def _iso_find_vds(f):
+    pvd = svd = None; sec = 16
+    while sec <= 64:
+        f.seek(sec * _ISO_SECTOR); vd = f.read(_ISO_SECTOR)
+        if len(vd) < 7 or vd[1:6] != b'CD001':
+            break
+        t = vd[0]
+        if t == 1 and pvd is None: pvd = vd
+        elif t == 2 and any(e in vd[88:120] for e in (b'%/@', b'%/C', b'%/E')): svd = vd
+        elif t == 255: break
+        sec += 1
+    return pvd, svd
+
+def _iso_root(vd):
+    rec = vd[156:190]
+    return struct.unpack('<I', rec[2:6])[0], struct.unpack('<I', rec[10:14])[0]
+
+def _iso_records(f, lba, length, joliet):
+    f.seek(lba * _ISO_SECTOR); block = f.read(length); out = []; i = 0
+    while i < len(block):
+        rlen = block[i]
+        if rlen == 0:
+            i = ((i // _ISO_SECTOR) + 1) * _ISO_SECTOR; continue
+        rec = block[i:i + rlen]; i += rlen
+        if len(rec) < 33: break
+        ext_lba = struct.unpack('<I', rec[2:6])[0]
+        dlen = struct.unpack('<I', rec[10:14])[0]
+        flags = rec[25]; idlen = rec[32]; ident = rec[33:33 + idlen]
+        if flags & 0x02: continue
+        if idlen == 1 and ident in (b'\x00', b'\x01'): continue
+        name = ident.decode('utf-16-be', 'replace') if joliet else ident.decode('ascii', 'replace')
+        if ';' in name: name = name.split(';')[0]
+        name = name.rstrip('.')
+        if name: out.append({'name': name, 'lba': ext_lba, 'size': dlen})
+    return out
+
+def _iso_list(path):
+    with open(path, 'rb') as f:
+        pvd, svd = _iso_find_vds(f)
+        vd = svd or pvd
+        if vd is None: return []
+        lba, length = _iso_root(vd)
+        recs = _iso_records(f, lba, length, joliet=(svd is not None))
+    return [{'name': r['name'], 'size': r['size']} for r in recs]
+
+def _iso_extract_to(path, name, dst_path, chunk=1 << 20):
+    with open(path, 'rb') as f:
+        pvd, svd = _iso_find_vds(f)
+        vd = svd or pvd
+        if vd is None: raise ValueError('pas un ISO9660')
+        lba, length = _iso_root(vd)
+        rec = next((r for r in _iso_records(f, lba, length, joliet=(svd is not None)) if r['name'] == name), None)
+        if rec is None: raise FileNotFoundError(name)
+        Path(dst_path).parent.mkdir(parents=True, exist_ok=True)
+        with open(dst_path, 'wb') as o:
+            f.seek(rec['lba'] * _ISO_SECTOR); remaining = rec['size']
+            while remaining > 0:
+                buf = f.read(min(chunk, remaining))
+                if not buf: break
+                o.write(buf); remaining -= len(buf)
+        return rec['size']
 MOUNTED = {}  # iso_id → {'iso_path','mount_path','dev','label','created_at'}
 
 # Refs « par référence » : un répertoire temporaire de symlinks vers des fichiers
@@ -1603,6 +1694,43 @@ class Handler(SimpleHTTPRequestHandler):
             job_id = _new_job('codec-restore-data')
             threading.Thread(target=_codec_restore_data_worker, args=(job_id, data, label), daemon=True).start()
             self._json(200, {'job_id': job_id}); return
+
+        if ep == '/codec/iso-list':
+            # Liste les fichiers à la racine d'un ISO DÉJÀ décodé (sans le monter).
+            # Mobile : après restore (mount KO), on affiche le contenu sur la page.
+            body = self._read_json()
+            iso_id = (body.get('id') or '').strip()
+            if not re.fullmatch(r'[0-9a-f]{8,32}', iso_id):
+                self._json(400, {'error': 'id requis (hex)'}); return
+            iso_path = ISO_CACHE_DIR / f'{iso_id}.iso'
+            if not iso_path.is_file():
+                self._json(404, {'error': 'iso introuvable (expiré ?)'}); return
+            try:
+                self._json(200, {'id': iso_id, 'files': _iso_list(str(iso_path))})
+            except Exception as e:
+                self._json(500, {'error': f'{type(e).__name__}: {e}'})
+            return
+
+        if ep == '/codec/save-file':
+            # Extrait UN fichier de l'ISO décodé vers le dossier accessible
+            # (sans app externe). Renvoie le chemin enregistré.
+            body = self._read_json()
+            iso_id = (body.get('id') or '').strip()
+            name   = Path(str(body.get('name') or '')).name      # anti path-traversal
+            if not re.fullmatch(r'[0-9a-f]{8,32}', iso_id) or not name:
+                self._json(400, {'error': 'id (hex) + name requis'}); return
+            iso_path = ISO_CACHE_DIR / f'{iso_id}.iso'
+            if not iso_path.is_file():
+                self._json(404, {'error': 'iso introuvable (expiré ?)'}); return
+            try:
+                dst = _save_dir() / name
+                size = _iso_extract_to(str(iso_path), name, str(dst))
+                self._json(200, {'ok': True, 'saved_path': str(dst), 'size': size})
+            except FileNotFoundError:
+                self._json(404, {'error': f'fichier absent de l\'iso: {name}'})
+            except Exception as e:
+                self._json(500, {'error': f'{type(e).__name__}: {e}'})
+            return
 
         if ep == '/redDEC':
             err = _ensure_codec()
