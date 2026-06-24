@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.26'
+VERSION = '0.5.27'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -1215,6 +1215,21 @@ class Handler(SimpleHTTPRequestHandler):
                     'serial_mbps': round(mb / ser, 2),
                     'parallel_mbps': round(mb / par, 2),
                     'speedup': round(ser / par, 2),
+                })
+            except Exception as e:
+                self._json(500, {'error': f'{type(e).__name__}: {e}'})
+            return
+        if ep == '/codec/gpu-bench':
+            # Bench de l'inférence GPU NATIVE (TFLite via la classe Kotlin CodecGpu,
+            # interop Chaquopy). Android uniquement.
+            if os.environ.get('REDSTARS_HELPER_PLATFORM') != 'android':
+                self._json(200, {'skip': 'desktop — pas de CodecGpu natif'}); return
+            try:
+                from com.redstars.app import CodecGpu
+                n = max(64, min(8192, int((query.get('n', ['2048']) or ['2048'])[0])))
+                self._json(200, {
+                    'status': str(CodecGpu.status()),
+                    'result': str(CodecGpu.selfTest(n)),
                 })
             except Exception as e:
                 self._json(500, {'error': f'{type(e).__name__}: {e}'})
