@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.30'
+VERSION = '0.5.31'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -1438,6 +1438,36 @@ class Handler(SimpleHTTPRequestHandler):
                 lat = self.rfile.read(n) if n > 0 else b''
                 out = codec_numpy._dec_bytes(lat)
                 self._raw(200, _np.asarray(out, _np.uint8).tobytes())
+            except Exception as e:
+                self._json(500, {'error': f'{type(e).__name__}: {e}'})
+            return
+        if ep == '/codec/encode-hash-save':
+            # data brute (body) -> hash (latents) enregistré sur l'appareil. ?name=
+            try:
+                import codec_numpy, numpy as _np
+                name = (query.get('name', ['fichier.hash']) or ['fichier.hash'])[0]
+                n = int(self.headers.get('Content-Length', '0') or 0)
+                raw = self.rfile.read(n) if n > 0 else b''
+                pad = (-len(raw)) % codec_numpy.BLOCK
+                arr = _np.frombuffer(raw + b'\x00' * pad, _np.uint8)
+                _, lat = codec_numpy._enc_blocks(arr)
+                p = _save_dir() / os.path.basename(name)
+                p.write_bytes(bytes(lat))
+                self._json(200, {'saved_path': str(p), 'in_bytes': len(raw), 'hash_bytes': len(lat)})
+            except Exception as e:
+                self._json(500, {'error': f'{type(e).__name__}: {e}'})
+            return
+        if ep == '/codec/decode-hash-save':
+            # hash (latents, body) -> data décodée (INT8/NPU) enregistrée sur l'appareil. ?name=
+            try:
+                import codec_numpy, numpy as _np
+                name = (query.get('name', ['fichier.bin']) or ['fichier.bin'])[0]
+                n = int(self.headers.get('Content-Length', '0') or 0)
+                lat = self.rfile.read(n) if n > 0 else b''
+                out = _np.asarray(codec_numpy._dec_bytes(lat), _np.uint8).tobytes()
+                p = _save_dir() / os.path.basename(name)
+                p.write_bytes(out)
+                self._json(200, {'saved_path': str(p), 'hash_bytes': len(lat), 'out_bytes': len(out)})
             except Exception as e:
                 self._json(500, {'error': f'{type(e).__name__}: {e}'})
             return
