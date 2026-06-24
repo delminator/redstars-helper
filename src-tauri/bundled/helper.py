@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.25'
+VERSION = '0.5.26'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -1179,6 +1179,42 @@ class Handler(SimpleHTTPRequestHandler):
                     'n': n, 'backend': _CODEC.get('backend'),
                     'enc_ms_per_patch': round(enc_ms, 3),
                     'dec_ms_per_patch': round(dec_ms, 3),
+                })
+            except Exception as e:
+                self._json(500, {'error': f'{type(e).__name__}: {e}'})
+            return
+        if ep == '/codec/bench-parallel':
+            # Décode n patchs en SÉRIE vs en T THREADS → mesure le speedup réel
+            # (les threads ne scalent que si numpy libère le GIL pendant l'einsum).
+            err = _ensure_codec()
+            if err:
+                self._json(500, {'error': f'codec load failed: {err}'}); return
+            import time as _t
+            import os as _os
+            import numpy as _np
+            from concurrent.futures import ThreadPoolExecutor
+            try:
+                from nn_numpy import dec_forward
+                n = max(64, min(8192, int((query.get('n', ['2048']) or ['2048'])[0])))
+                T = max(1, min(16, int((query.get('threads', [str(_os.cpu_count() or 4)]) or ['4'])[0])))
+                z = _np.random.randint(0, 2, (n, 8, 32, 32)).astype(_np.uint8)
+                dec_forward(z[:16])                                # warmup
+                t0 = _t.time()
+                for i in range(0, n, 256):
+                    dec_forward(z[i:i + 256])
+                ser = _t.time() - t0
+                cs = (n + T - 1) // T
+                chunks = [z[i:i + cs] for i in range(0, n, cs)]
+                t0 = _t.time()
+                with ThreadPoolExecutor(max_workers=T) as ex:
+                    list(ex.map(dec_forward, chunks))
+                par = _t.time() - t0
+                mb = n * 1024 / 1e6
+                self._json(200, {
+                    'n': n, 'threads': T, 'cores': _os.cpu_count(),
+                    'serial_mbps': round(mb / ser, 2),
+                    'parallel_mbps': round(mb / par, 2),
+                    'speedup': round(ser / par, 2),
                 })
             except Exception as e:
                 self._json(500, {'error': f'{type(e).__name__}: {e}'})
