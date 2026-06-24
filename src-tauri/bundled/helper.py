@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.24'
+VERSION = '0.5.25'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -1152,6 +1152,36 @@ class Handler(SimpleHTTPRequestHandler):
         query = parse_qs(split.query)
         if ep == '/status':
             self._json(200, {'ok': True, 'version': VERSION})
+            return
+        if ep == '/codec/bench-single':
+            # Latence d'UNE inférence 32×32 : enc (image→hash) et dec (hash→image),
+            # moyennée sur n forwards. Isole le coût per-patch (vs le débit en masse).
+            err = _ensure_codec()
+            if err:
+                self._json(500, {'error': f'codec load failed: {err}'}); return
+            import time as _t
+            import numpy as _np
+            try:
+                from nn_numpy import enc_forward, dec_forward
+                n = max(1, min(2000, int((query.get('n', ['200']) or ['200'])[0])))
+                patch = _np.random.randint(0, 256, (1, 32, 32), dtype=_np.uint8)
+                z = enc_forward(patch)            # warmup + latent pour le decode
+                _ = dec_forward(z)
+                t0 = _t.time()
+                for _ in range(n):
+                    enc_forward(patch)
+                enc_ms = (_t.time() - t0) * 1000.0 / n
+                t0 = _t.time()
+                for _ in range(n):
+                    dec_forward(z)
+                dec_ms = (_t.time() - t0) * 1000.0 / n
+                self._json(200, {
+                    'n': n, 'backend': _CODEC.get('backend'),
+                    'enc_ms_per_patch': round(enc_ms, 3),
+                    'dec_ms_per_patch': round(dec_ms, 3),
+                })
+            except Exception as e:
+                self._json(500, {'error': f'{type(e).__name__}: {e}'})
             return
         if ep == '/redDEC-job':
             # GET /redDEC-job?id=<job_id> — poll endpoint pour /redDEC-chain.
