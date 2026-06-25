@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.31'
+VERSION = '0.5.32'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -1255,6 +1255,16 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e:
                 self._json(500, {'error': f'{type(e).__name__}: {e}'})
             return
+        if ep == '/codec/list-savedir':
+            # Liste les fichiers du dossier RedStars (pour picker sans navigateur sur mobile).
+            try:
+                d = _save_dir()
+                files = sorted(({'name': f.name, 'bytes': f.stat().st_size}
+                                for f in d.iterdir() if f.is_file()), key=lambda x: x['name'])
+                self._json(200, {'dir': str(d), 'files': files})
+            except Exception as e:
+                self._json(500, {'error': f'{type(e).__name__}: {e}'})
+            return
         if ep == '/redDEC-job':
             # GET /redDEC-job?id=<job_id> — poll endpoint pour /redDEC-chain.
             job_id = (query.get('id', ['']) or [''])[0]
@@ -1468,6 +1478,38 @@ class Handler(SimpleHTTPRequestHandler):
                 p = _save_dir() / os.path.basename(name)
                 p.write_bytes(out)
                 self._json(200, {'saved_path': str(p), 'hash_bytes': len(lat), 'out_bytes': len(out)})
+            except Exception as e:
+                self._json(500, {'error': f'{type(e).__name__}: {e}'})
+            return
+        if ep == '/codec/encode-file-hash':
+            # {name} d'un fichier du dossier RedStars -> hash (latents) au même endroit.
+            try:
+                import codec_numpy, numpy as _np
+                name = os.path.basename(self._read_json().get('name', ''))
+                src = _save_dir() / name
+                if not name or not src.is_file():
+                    self._json(404, {'error': f'introuvable: {name}'}); return
+                raw = src.read_bytes(); pad = (-len(raw)) % codec_numpy.BLOCK
+                arr = _np.frombuffer(raw + b'\x00' * pad, _np.uint8)
+                _, lat = codec_numpy._enc_blocks(arr)
+                p = _save_dir() / (name + '.hash'); p.write_bytes(bytes(lat))
+                self._json(200, {'saved_path': str(p), 'name': name + '.hash', 'in_bytes': len(raw), 'hash_bytes': len(lat)})
+            except Exception as e:
+                self._json(500, {'error': f'{type(e).__name__}: {e}'})
+            return
+        if ep == '/codec/decode-file-hash':
+            # {name} d'un fichier hash du dossier RedStars -> data décodée (INT8/NPU) au même endroit.
+            try:
+                import codec_numpy, numpy as _np
+                name = os.path.basename(self._read_json().get('name', ''))
+                src = _save_dir() / name
+                if not name or not src.is_file():
+                    self._json(404, {'error': f'introuvable: {name}'}); return
+                lat = src.read_bytes()
+                out = _np.asarray(codec_numpy._dec_bytes(lat), _np.uint8).tobytes()
+                outname = name[:-5] if name.endswith('.hash') else name + '.decoded'
+                p = _save_dir() / outname; p.write_bytes(out)
+                self._json(200, {'saved_path': str(p), 'name': outname, 'hash_bytes': len(lat), 'out_bytes': len(out)})
             except Exception as e:
                 self._json(500, {'error': f'{type(e).__name__}: {e}'})
             return
