@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.36'
+VERSION = '0.5.38'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -225,9 +225,59 @@ class ScaleReader:
                 self._arm_timer()
 
     # --- public API ------------------------------------------------------
+    # Freshness window for the Android bridge file: no line newer than this ⇒
+    # treat the scale as disconnected (unplugged / powered off).
+    STALE_MS = 4000
+
+    def _read_from_file(self, path):
+        """Android: an app can't open /dev/ttyUSB0, so the native Kotlin bridge
+        (UsbScaleBridge, usb-serial-for-android) reads the USB scale and writes the
+        freshest line to REDSTARS_SCALE_FILE as '<epoch_ms>\\t<raw>'. Parse it here
+        with the SAME SCALE_LINE regex / return shape as the serial path."""
+        try:
+            with open(path, 'r') as f:
+                content = f.read().strip()
+        except FileNotFoundError:
+            self._last = dict(self._last, connected=False, error='balance bridge: no reading yet')
+            return dict(self._last)
+        except Exception as e:
+            self._last = dict(self._last, connected=False, error=type(e).__name__ + ': ' + str(e))
+            return dict(self._last)
+        if not content or '\t' not in content:
+            self._last = dict(self._last, connected=False, error='balance bridge: no reading yet')
+            return dict(self._last)
+        ts_str, raw = content.split('\t', 1)
+        raw = raw.strip()
+        try:
+            age_ms = time.time() * 1000.0 - float(ts_str)
+        except ValueError:
+            age_ms = None
+        if age_ms is not None and age_ms > self.STALE_MS:
+            self._last = dict(self._last, connected=False, raw=raw, error='scale idle (unplugged?)')
+            return dict(self._last)
+        m = SCALE_LINE.search(raw)
+        if m:
+            sign = -1 if m.group('sign') == '-' else 1
+            self._last = {
+                'connected': True,
+                'value': sign * float(m.group('value')),
+                'unit': (m.group('unit') or 'g').lower(),
+                'sign': m.group('sign'),
+                'status': m.group('status'),
+                'raw': raw,
+                'updated_at': time.time(),
+                'error': None,
+            }
+        else:
+            self._last = dict(self._last, connected=True, raw=raw, updated_at=time.time(), error=None)
+        return dict(self._last)
+
     def read(self):
         """Open on demand, drain to the freshest line, return the reading.
         The port auto-closes IDLE_CLOSE_SECS after the last call."""
+        _bridge = os.environ.get('REDSTARS_SCALE_FILE')
+        if _bridge:
+            return self._read_from_file(_bridge)
         with self.lock:
             self._last_request = time.time()
             if self._ser is None:
@@ -2253,6 +2303,51 @@ def _route_int8_if_safe():
         print(f'  [int8] routage echoue ({type(e).__name__}: {e}) — decode reste numpy')
 
 
+def _route_gpu_if_available():
+    """Desktop : route le codec (enc + dec + sidecar) vers onnxruntime + l'EP GPU de
+    l'OS (Windows=DirectML, macOS=CoreML, Linux=CUDA/ROCm), fallback CPU auto. codec.onnx
+    est bit-exact vs numpy ; on RE-vérifie au démarrage sur ce device AVANT de router.
+    Android exclu (le codec y passe déjà par le NPU via CodecGpu)."""
+    if os.environ.get('REDSTARS_HELPER_PLATFORM') == 'android':
+        return
+    try:
+        import platform
+        import numpy as _np
+        import onnxruntime as _ort
+        import codec_numpy
+        import codec_ort
+        sysn = platform.system()
+        if sysn == 'Windows':
+            prefer = ['DmlExecutionProvider']
+        elif sysn == 'Darwin':
+            prefer = ['CoreMLExecutionProvider']
+        else:
+            prefer = ['CUDAExecutionProvider', 'ROCMExecutionProvider']
+        avail = set(_ort.get_available_providers())
+        gpu = [p for p in prefer if p in avail]
+        # self-check bit-exact vs numpy AVANT de router (sur du bruit, 4 patches)
+        rng = _np.random.default_rng(0)
+        raw = rng.integers(0, 256, 4096, dtype=_np.uint8)
+        _, lat = codec_ort.enc_blocks(raw, providers=prefer)
+        _, lat_ref = codec_numpy._enc_blocks(raw)
+        dec = _np.asarray(codec_ort.dec_bytes(bytes(lat), providers=prefer), _np.uint8)
+        dec_ref = _np.asarray(codec_numpy._dec_bytes(bytes(lat_ref)), _np.uint8)
+        if bytes(lat) != bytes(lat_ref) or not _np.array_equal(dec, dec_ref):
+            print('  [gpu] codec.onnx NON bit-exact vs numpy ici — codec reste numpy'); return
+        # route enc + dec + sidecar (dec_forward), comme le NPU côté Android
+        codec_numpy._enc_blocks = lambda r: codec_ort.enc_blocks(r, providers=prefer)
+        codec_numpy._dec_bytes = lambda l: codec_ort.dec_bytes(l, providers=prefer)
+        def _dfwd(z):
+            _lat = _np.packbits(z.reshape(len(z), -1), axis=1).tobytes()
+            return _np.asarray(codec_ort.dec_bytes(_lat, providers=prefer),
+                               _np.uint8).reshape(len(z), 32, 32)
+        codec_numpy.dec_forward = _dfwd
+        ep = gpu[0] if gpu else 'CPU (aucun EP GPU ici)'
+        print(f'  [gpu] codec route vers onnxruntime — EP={ep} (fallback CPU, bit-exact OK)')
+    except Exception as e:
+        print(f'  [gpu] routage echoue ({type(e).__name__}: {e}) — codec reste numpy')
+
+
 def main():
     # SO_REUSEADDR : sur Android, l'OS garde le socket 30-120 s en TIME_WAIT
     # après un crash du process. Sans REUSEADDR, le redémarrage de l'app
@@ -2265,6 +2360,7 @@ def main():
     print(f'redstars-helper {VERSION}')
     print(f'  static files from {DEMO_DIR}')
     _route_int8_if_safe()   # Android : décode codec via INT8/NPU si bit-exact
+    _route_gpu_if_available()  # Desktop : codec via onnxruntime + EP GPU de l'OS (sinon CPU)
 
     print(f'  HTTP  http://0.0.0.0:{PORT}/  +  /helper/*')
 
