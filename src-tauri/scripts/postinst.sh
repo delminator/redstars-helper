@@ -47,4 +47,23 @@ if [ -f "$DESKTOP" ]; then
     update-desktop-database /usr/share/applications >/dev/null 2>&1 || true
 fi
 
+# --- Serial-scale access (udev, Linux only) --------------------------------
+# The electronic scale is a USB-serial adapter (CH340 / CP210x / FTDI / PL2303).
+# On Linux /dev/ttyUSB* is root:dialout mode 660, so the Helper (running as the
+# user) can't open it → "permission denied (udev rule?)". Drop a udev rule that
+# grants access, then reload so it applies without reboot/relogin (and re-trigger
+# so an already-plugged scale picks up the new mode). Best-effort — never blocks
+# the install. Windows COM ports and macOS /dev/cu.* are user-accessible by
+# default, so there is nothing equivalent to do there.
+UDEV_RULE="/etc/udev/rules.d/99-redstars-scale.rules"
+cat > "$UDEV_RULE" 2>/dev/null <<'RULE'
+# RedStars electronic scale — USB-serial adapters readable/writable without root.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="0403", MODE="0666"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="067b", MODE="0666"
+RULE
+udevadm control --reload-rules >/dev/null 2>&1 || true
+udevadm trigger --subsystem-match=tty >/dev/null 2>&1 || true
+
 exit 0
