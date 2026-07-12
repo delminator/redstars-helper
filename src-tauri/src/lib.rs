@@ -40,6 +40,65 @@ fn clean_python_command(py: &str) -> Command {
 /// inherits a stripped PATH without ~/.pyenv/shims), then a bare name
 /// for PATH resolution, then common system locations. First successful
 /// spawn wins.
+/// Tray → « Ouvrir RedStars en console ».
+///
+/// Le helper est un agent sans fenêtre : il n'a pas de webview où afficher quoi
+/// que ce soit. Il ouvre donc un ÉMULATEUR DE TERMINAL et y lance
+/// `helper.py console` — c'est-à-dire le client replié dans le script
+/// auto-mis-à-jour, pas un binaire séparé qui dériverait.
+///
+/// Le choix du terminal est une liste d'essais, dans cet ordre : ce que
+/// l'utilisateur a déclaré (`$TERMINAL`), puis les émulateurs courants. Il n'y a
+/// pas d'API portable pour « ouvre un terminal » sous Linux, et prétendre le
+/// contraire donne un menu qui ne fait rien sur la moitié des machines.
+///
+/// Si aucun n'est trouvé, on le DIT (stderr) plutôt que d'échouer en silence :
+/// un item de menu qui ne réagit pas est pire qu'un item absent.
+fn open_console(app: &AppHandle) {
+    let script = script_updater::current_script_path(app);
+    let py = python_candidates()
+        .into_iter()
+        .find(|p| !p.starts_with('/') || std::path::Path::new(p).is_file())
+        .unwrap_or_else(|| "python3".to_string());
+
+    let cmd = format!("{} {} console", py, script.display());
+
+    // `-e` est le drapeau « exécute cette commande » de presque tous les
+    // émulateurs. foot/alacritty/kitty le prennent tel quel ; les terminaux
+    // GTK veulent parfois `--`, d'où les deux formes.
+    let candidates: Vec<(String, Vec<String>)> = std::env::var("TERMINAL")
+        .ok()
+        .map(|t| vec![(t, vec!["-e".into()])])
+        .unwrap_or_default()
+        .into_iter()
+        .chain([
+            ("foot".to_string(),           vec!["-e".to_string()]),
+            ("alacritty".to_string(),      vec!["-e".to_string()]),
+            ("kitty".to_string(),          vec![]),
+            ("wezterm".to_string(),        vec!["start".to_string(), "--".to_string()]),
+            ("gnome-terminal".to_string(), vec!["--".to_string()]),
+            ("konsole".to_string(),        vec!["-e".to_string()]),
+            ("xfce4-terminal".to_string(), vec!["-e".to_string()]),
+            ("xterm".to_string(),          vec!["-e".to_string()]),
+        ])
+        .collect();
+
+    for (term, pre) in candidates {
+        let mut c = Command::new(&term);
+        for a in &pre {
+            c.arg(a);
+        }
+        // `sh -lc` pour que le shell de connexion soit chargé (PATH, pyenv…) et
+        // que le terminal ne se referme pas à la seconde où le client rend la main.
+        c.arg("sh").arg("-lc").arg(format!("{cmd}; echo; read -p 'Entrée pour fermer…' _"));
+        if c.spawn().is_ok() {
+            eprintln!("[helper] console ouverte via {term}");
+            return;
+        }
+    }
+    eprintln!("[helper] aucun émulateur de terminal trouvé — définissez $TERMINAL, ou lancez : {cmd}");
+}
+
 fn spawn_helper(app: &AppHandle) -> Option<Child> {
     let script = script_updater::current_script_path(app);
     for py in python_candidates() {
@@ -289,6 +348,7 @@ pub fn run() {
                 app,
                 &[
                     &MenuItem::with_id(app, "open", "Open demo", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "console", "Ouvrir RedStars en console", true, None::<&str>)?,
                     &MenuItem::with_id(app, "restart", "Restart helper", true, None::<&str>)?,
                     &MenuItem::with_id(app, "update", "Check for updates", true, None::<&str>)?,
                     &MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?,
@@ -300,6 +360,7 @@ pub fn run() {
                 .tooltip("Redstars Helper — http://localhost:49080")
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "open" => { let _ = app.opener().open_url(HELPER_URL, None::<&str>); }
+                    "console" => { open_console(app); }
                     "restart" => {
                         // Pull a fresh copy first, then restart with whichever
                         // is now current (cached vs bundled fallback).
