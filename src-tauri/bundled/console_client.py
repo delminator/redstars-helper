@@ -114,14 +114,17 @@ def pick(items, label, render):
 # ── La boucle ───────────────────────────────────────────────────────────────
 
 def run(app_url, token, app, org, role, slot, cols, rows, lang):
-    cursor, offset = 0, 0
+    cursor = 0
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
         tty.setraw(fd)
         while True:
+            # Le serveur pagine tout seul : on lui donne le curseur, il place la
+            # fenêtre. Le client n'a pas d'état de défilement à tenir — et donc pas
+            # d'occasion de le désynchroniser.
             f = frame(app_url, token, app=app, org=org, role=role, slot=slot,
-                      cursor=cursor, offset=offset, cols=cols, rows=rows, lang=lang)
+                      cursor=cursor, cols=cols, rows=rows, lang=lang)
             if "error" in f:
                 sys.stdout.write("\x1b[2J\x1b[H\x1b[31m" + f["error"].replace("\n", "\r\n") + "\x1b[0m\r\n\r\n")
                 sys.stdout.write("\x1b[2mUne touche pour revenir…\x1b[0m")
@@ -134,27 +137,27 @@ def run(app_url, token, app, org, role, slot, cols, rows, lang):
             sys.stdout.flush()
 
             k = read_key(fd)
-            n = f.get("rows", 0)
-            body = max(1, rows - 5)
-            if k == "down":
-                cursor = min(cursor + 1, max(0, n - 1))
-                if cursor >= offset + body:
-                    offset += 1
-            elif k == "up":
-                cursor = max(cursor - 1, 0)
-                if cursor < offset:
-                    offset = max(0, offset - 1)
-            elif k == "next":
-                cursor = min(cursor + body, max(0, n - 1)); offset = min(offset + body, max(0, n - body))
-            elif k == "prev":
-                cursor = max(cursor - body, 0); offset = max(offset - body, 0)
+
+            # Le curseur est un index de LIGNE, et toutes les lignes ne sont pas
+            # focusables : un titre, une ligne vide, un en-tête de colonnes n'ont
+            # rien à sélectionner. On se déplace donc de focusable en focusable —
+            # et c'est la TRAME qui dit lesquels, pas nous.
+            foc = f.get("focusables", [])
+            here = next((i for i, x in enumerate(foc) if x["line"] == f.get("cursor")), 0)
+
+            if k == "down" and foc:
+                cursor = foc[min(here + 1, len(foc) - 1)]["line"]
+            elif k == "up" and foc:
+                cursor = foc[max(here - 1, 0)]["line"]
+            elif k == "next" and foc:
+                cursor = foc[min(here + max(1, rows - 5), len(foc) - 1)]["line"]
+            elif k == "prev" and foc:
+                cursor = foc[max(here - max(1, rows - 5), 0)]["line"]
             elif k == "enter":
                 # Ce que fait Entrée est DIT PAR LA TRAME, pas décidé ici.
-                foc = f.get("focusables", [])
-                cur = f.get("cursor", -1)
-                if 0 <= cur < len(foc):
-                    act = foc[cur].get("action") or {}
-                    sys.stdout.write("\r\n\x1b[33m→ " + json.dumps(act) + "\x1b[0m\r\n")
+                if 0 <= here < len(foc):
+                    act = foc[here].get("action") or {}
+                    sys.stdout.write("\r\n\x1b[33m→ " + json.dumps(act, ensure_ascii=False) + "\x1b[0m\r\n")
                     sys.stdout.write("\x1b[2m(le rendu des modales n'est pas encore écrit — une touche)\x1b[0m")
                     sys.stdout.flush()
                     os.read(fd, 1)
@@ -164,6 +167,55 @@ def run(app_url, token, app, org, role, slot, cols, rows, lang):
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         sys.stdout.write("\x1b[2J\x1b[H")
         sys.stdout.flush()
+
+
+def run_accessible(app_url, token, app, org, role, slot, lang):
+    """Le mode accessible. Une liste numérotée, on tape un numéro, on valide.
+
+    Ce n'est PAS le mode visuel avec la voix par-dessus. Aucun mode raw, aucun
+    curseur, aucune grille : le terminal reste en saisie ligne, ce qui est le
+    seul régime où un lecteur d'écran est chez lui.
+
+    Le curseur d'un mode visuel est justement ce qu'un lecteur d'écran suit le
+    plus mal : il épelle les traits de tableau, annonce le remplissage des
+    colonnes, et se perd à chaque repeint. Une liste numérotée n'a rien de tout
+    ça — et c'est, accessoirement, l'interaction native de la machine qu'on
+    imite : les services Minitel étaient des menus numérotés.
+    """
+    intro = "1"
+    while True:
+        url = f"{app_url}/api/console/frame/?" + urllib.parse.urlencode(
+            dict(app=app, org=org, role=role, slot=slot, lang=lang, a11y=1, intro=intro))
+        try:
+            txt = _req(url, headers={"Authorization": f"Bearer {token}"}, raw=True).decode()
+        except urllib.error.HTTPError as e:
+            print(json.loads(e.read() or b"{}").get("error", f"Erreur HTTP {e.code}"))
+            return
+        print()
+        print(txt)
+        intro = "0"                       # ne relire le résumé qu'une fois
+
+        try:
+            answer = input("> ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return
+        if answer in ("0", "q", ""):
+            return
+        if answer == "n":
+            print("La création n'est pas encore écrite.")
+            continue
+        if answer.isdigit():
+            # On redemande la trame pour lire l'action que le SERVEUR associe à
+            # ce numéro. Le client ne décide de rien, même ici.
+            f = frame(app_url, token, app=app, org=org, role=role, slot=slot, lang=lang)
+            hit = next((x for x in f.get("focusables", []) if x["n"] == int(answer)), None)
+            if not hit:
+                print(f"Il n'y a pas d'élément numéro {answer}.")
+                continue
+            print(f"\n{hit['speech']}")
+            print("(l'ouverture du détail n'est pas encore écrite)")
+            continue
+        print("Tapez un numéro, ou 0 pour revenir.")
 
 
 def main():
@@ -178,12 +230,23 @@ def main():
     ap.add_argument("--cols", type=int, default=0, help="0 = taille réelle du terminal")
     ap.add_argument("--rows", type=int, default=0)
     ap.add_argument("--minitel", action="store_true", help="force 40×24, comme un Minitel")
+    ap.add_argument("--accessible", action="store_true",
+                    help="liste numérotée, texte pur, sans curseur — pour lecteur d'écran")
     a = ap.parse_args()
 
-    cols, rows = (40, 24) if a.minitel else (
-        a.cols or os.get_terminal_size().columns,
-        a.rows or os.get_terminal_size().lines,
-    )
+    # La taille du terminal ne doit JAMAIS être une condition d'existence :
+    # get_terminal_size() lève dès que la sortie est redirigée — un pipe, un
+    # cron, un lecteur d'écran. On retombe sur 80×24, la taille que tout le
+    # monde a eue pendant quarante ans.
+    def term_size():
+        try:
+            t = os.get_terminal_size()
+            return t.columns, t.lines
+        except OSError:
+            return 80, 24
+
+    tc, tr = term_size()
+    cols, rows = (40, 24) if a.minitel else (a.cols or tc, a.rows or tr)
 
     user = a.user or input("Utilisateur : ")
     pw = a.password or getpass.getpass("Mot de passe : ")
@@ -210,6 +273,30 @@ def main():
     if "error" in s:
         sys.exit(s["error"])
     slots = s["slots"]
+
+    if a.accessible:
+        # Le sommaire aussi est une liste numérotée. Les slots que la console ne
+        # sait PAS rendre (du React sur mesure : la carto d'eau, ses graphes) sont
+        # annoncés comme tels au lieu d'être cachés — une dette qu'on dit tout
+        # haut plutôt qu'un silence qui laisse croire que tout est là.
+        rendable = [x for x in slots if x["kind"]]
+        print(f"\n{app} version {s['version']}. Organisation {org['name']}.")
+        print(f"{len(rendable)} rubriques.\n")
+        for i, x in enumerate(rendable, 1):
+            print(f"{i}. {x['id']}")
+        muets = [x['id'] for x in slots if not x['kind']]
+        if muets:
+            print(f"\nNon disponibles en console : {', '.join(muets)}.")
+        print(f"\nTapez un numéro de 1 à {len(rendable)} puis Entrée. 0 pour quitter.")
+        try:
+            n = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return
+        if not n.isdigit() or not (1 <= int(n) <= len(rendable)):
+            return
+        run_accessible(a.app_url, token, app, org["oid"], a.role, rendable[int(n)-1]["id"], a.lang)
+        return
+
     choice = pick(slots, f"{app} v{s['version']} — {org['name']}",
                   lambda x: f"{x['id']:<16} {x['kind'] or '(React sur mesure — pas de rendu console)'}")
     if not choice or not choice["kind"]:
