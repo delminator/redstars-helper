@@ -70,10 +70,19 @@ jobs:
             librsvg2-dev \
             libsoup-3.0-dev \
             patchelf \
-            rpm
+            rpm \
+            xdg-utils
           # `rpm` package provides rpmbuild on Ubuntu — Tauri uses it to
           # produce the .rpm bundle alongside .deb and .AppImage. Without
           # this, the rpm target silently skips and we ship only .deb.
+          #
+          # `xdg-utils` provides /usr/bin/xdg-open, which the AppImage bundler
+          # copies into the bundle. The x86_64 runner image happens to ship it
+          # preinstalled; the arm64 image does not — so v0.3.5's arm build
+          # compiled Rust, produced a working .deb AND .rpm, then died on the
+          # AppImage step and took both of them down with it, unuploaded.
+          # Install it explicitly rather than relying on what an image happens
+          # to carry: that assumption is invisible until the day it isn't.
 
       - uses: actions/setup-node@v4
         with:
