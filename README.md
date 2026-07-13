@@ -10,9 +10,39 @@ this helper, and surfaces a download banner when it's missing or outdated.
 
 ## Install (Linux)
 
+### En une commande (recommandé)
+
 ```bash
-sudo apt install ./redstars-helper_0.1.0_amd64.deb
-# or extract to ~/.local for non-system install
+curl -fsSL https://raw.githubusercontent.com/delminator/redstars-helper/main/install.sh | sh
+```
+
+Le script télécharge la dernière release et choisit tout seul le bon format :
+
+- **OS immuable** (Fedora Silverblue/Kinoite, uBlue…) ou `/usr` en lecture
+  seule → **AppImage** dans `~/.local/lib` (aucune écriture système).
+- **Debian / Ubuntu / Mint** → paquet **`.deb`** (apt/dpkg, `sudo`).
+- **Fedora / RHEL / openSUSE** → paquet **`.rpm`** (dnf/zypper, `sudo`).
+
+Relancer la même commande **met à jour** vers la dernière version. Options :
+`… | sh -s -- --appimage` (forcer un format : `--deb`, `--rpm`), ou
+`… | sh -s -- --uninstall` pour désinstaller.
+
+Une fois installé, la mise à jour peut aussi se faire depuis le helper :
+
+```bash
+redhelper upgrade              # télécharge + installe la dernière version
+redhelper upgrade --uninstall  # désinstalle
+```
+
+### À la main
+
+```bash
+# Debian / Ubuntu / Mint
+sudo apt install ./Redstars.Helper_*_amd64.deb
+# Fedora / RHEL / openSUSE
+sudo dnf install ./Redstars.Helper-*.x86_64.rpm
+# AppImage (universel, y compris OS immuable)
+chmod +x Redstars.Helper_*_amd64.AppImage && ./Redstars.Helper_*_amd64.AppImage
 ```
 
 The app lives in your application menu as **Redstars Helper**, runs in the

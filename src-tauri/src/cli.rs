@@ -31,6 +31,10 @@ use std::process::Command;
 const IDENTIFIER: &str = "fr.redlinks.redstars-helper";
 const SCRIPT_NAME: &str = "helper.py";
 
+/// Script d'installation/mise à jour universel, rejoué par `redhelper upgrade`.
+const INSTALL_SCRIPT_URL: &str =
+    "https://raw.githubusercontent.com/delminator/redstars-helper/main/install.sh";
+
 /// Regarde les arguments (et le nom sous lequel on a été appelé). Si c'est une
 /// invocation console, on la lance en avant-plan et on NE REVIENT PAS (exit avec
 /// le code de Python). Sinon on rend la main : `run()` démarre le tray normal.
@@ -64,6 +68,9 @@ pub fn intercept() {
         match sub {
             Some("console") => (true, false, &args[2.min(args.len())..]),
             Some("minitel") => (true, true, &args[2.min(args.len())..]),
+            Some("upgrade") | Some("update") | Some("install") => {
+                std::process::exit(run_upgrade(&args[2.min(args.len())..]));
+            }
             Some("help") | Some("--help") | Some("-h") => {
                 print_usage();
                 std::process::exit(0);
@@ -210,6 +217,59 @@ fn clean_python_command(py: &str) -> Command {
     crate::clean_python_command(py)
 }
 
+/// `redhelper upgrade` : rejoue le script d'install/upgrade universel
+/// (`install.sh`), qui tire la dernière release et remplace la variante en
+/// place (AppImage / .deb / .rpm). En avant-plan, stdio hérité, on rend le code
+/// de sortie du script. Les options éventuelles (`--appimage`, `--deb`,
+/// `--rpm`, `--uninstall`) sont transmises telles quelles.
+///
+/// On passe par `curl … | sh` : c'est le même point d'entrée que l'install
+/// initiale, donc une seule logique de détection de plateforme à maintenir.
+fn run_upgrade(passthrough: &[String]) -> i32 {
+    let fetch = if which("curl") {
+        format!("curl -fsSL '{}'", INSTALL_SCRIPT_URL)
+    } else if which("wget") {
+        format!("wget -qO- '{}'", INSTALL_SCRIPT_URL)
+    } else {
+        eprintln!("[redhelper] curl ou wget est requis pour « upgrade ».");
+        return 1;
+    };
+
+    // Options transmises au script après `sh -s --`, chacune protégée en
+    // single-quote pour survivre à l'expansion du shell.
+    let mut extra = String::new();
+    for a in passthrough {
+        extra.push(' ');
+        extra.push_str(&shell_single_quote(a));
+    }
+
+    let cmd = format!("{fetch} | sh -s --{extra}");
+    eprintln!("[redhelper] mise à jour depuis {INSTALL_SCRIPT_URL}");
+    match Command::new("sh").arg("-c").arg(&cmd).status() {
+        Ok(status) => status.code().unwrap_or(0),
+        Err(e) => {
+            eprintln!("[redhelper] échec du lancement de la mise à jour : {e}");
+            1
+        }
+    }
+}
+
+/// Un exécutable est-il trouvable dans le PATH ? (évite une dépendance externe.)
+fn which(prog: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| {
+            std::env::split_paths(&paths)
+                .any(|dir| dir.join(prog).is_file())
+        })
+        .unwrap_or(false)
+}
+
+/// Entoure `s` de single-quotes en échappant les single-quotes internes —
+/// suffisant pour passer une option en toute sécurité à `sh`.
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// Marqueur en tête des lanceurs qu'on génère, pour les reconnaître et les
 /// rafraîchir sans jamais écraser un fichier que l'utilisateur aurait posé.
 #[cfg(target_os = "linux")]
@@ -319,6 +379,12 @@ Les options sont transmises telles quelles à helper.py, par ex. :
 
   redhelper console --app eau --user alice
 
-Voir « redhelper console --help » pour la liste complète des options."
+Voir « redhelper console --help » pour la liste complète des options.
+
+Mise à jour / installation :
+
+  redhelper upgrade             télécharge et installe la dernière version
+  redhelper upgrade --uninstall désinstalle
+                                (choisit AppImage / .deb / .rpm selon le système)"
     );
 }
