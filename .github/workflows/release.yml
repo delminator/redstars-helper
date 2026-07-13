@@ -5,9 +5,19 @@ name: Release
 #   - manual workflow_dispatch → useful for testing the matrix
 #
 # Matrix:
-#   - ubuntu-latest  → .deb + .AppImage
-#   - macos-latest   → .dmg + .app.tar.gz
-#   - windows-latest → .msi + .exe
+#   - ubuntu-latest    → x86_64 .deb + .AppImage + .rpm
+#   - ubuntu-24.04-arm → aarch64 .deb + .AppImage + .rpm
+#   - macos-latest     → aarch64 .dmg + .app.tar.gz
+#   - windows-latest   → x64 .msi + .exe
+#
+# The arm64 Linux target was missing until v0.3.5, and its absence bit exactly
+# where it hurts: the machine you would most want to browse RedStars from a
+# terminal — a Raspberry Pi, a headless ARM box — was the one with no package.
+#
+# Built on a NATIVE arm runner (free on public repos) rather than cross-compiled.
+# Cross-compiling Tauri to aarch64 means cross-compiling webkit2gtk's whole
+# dependency tree, which is a multi-day sysroot project that breaks on every
+# upstream bump. A native runner is one line.
 #
 # Secrets required (GitHub repo settings → Actions → Secrets):
 #   - TAURI_SIGNING_PRIVATE_KEY      : minisign-format private key
@@ -34,7 +44,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: 'ubuntu-latest'
+          - platform: 'ubuntu-latest'      # x86_64
+            args: ''
+          - platform: 'ubuntu-24.04-arm'   # aarch64 — native runner, no cross-compile
             args: ''
           - platform: 'macos-latest'
             args: ''
@@ -46,7 +58,10 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Linux dependencies
-        if: matrix.platform == 'ubuntu-latest'
+        # Both Linux runners, not just x86_64. Gating on the exact string
+        # 'ubuntu-latest' is what silently skipped every dependency on the arm
+        # runner and produced a build that failed on the first #include.
+        if: startsWith(matrix.platform, 'ubuntu')
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -73,7 +88,12 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             src-tauri/target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          # runner.ARCH, not just runner.os. Both Linux runners report "Linux",
+          # so without the arch the x86_64 and aarch64 builds would share one
+          # cache — and `src-tauri/target` is full of compiled objects for the
+          # WRONG architecture. The linker's complaint about that is not obvious,
+          # and it only appears on the runner, which is the worst place to debug.
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - run: npm ci
 
@@ -96,11 +116,20 @@ jobs:
 
             ## Install
 
-            - **Debian / Ubuntu / Mint** — `sudo apt install ./redstars-helper_*.deb`
-            - **Fedora / RHEL / openSUSE** — `sudo dnf install ./redstars-helper-*.rpm`
-            - **Arch / Nix / unknown Linux** — `chmod +x *.AppImage && ./*.AppImage`
-            - **macOS** — open the `.dmg`
+            Linux ships **x86_64 (amd64)** and **arm64 (aarch64)** — pick your arch.
+            `uname -m` tells you: `x86_64` or `aarch64`.
+
+            - **Debian / Ubuntu / Mint** — `sudo apt install ./Redstars.Helper_*_<arch>.deb`
+            - **Fedora / RHEL / openSUSE** — `sudo dnf install ./Redstars.Helper-*.<arch>.rpm`
+            - **Arch / Nix / Raspberry Pi / unknown Linux** — `chmod +x *.AppImage && ./*.AppImage`
+            - **macOS** — open the `.dmg` (Apple Silicon)
             - **Windows** — run the `.msi`
+
+            ## RedStars in a terminal
+
+            `helper.py console` browses RedStars from a headless box — including a
+            Raspberry Pi, which is why the arm64 packages exist. `--minitel` for
+            40×24, `--accessible` for a numbered list read by a screen reader.
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
