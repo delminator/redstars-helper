@@ -62,12 +62,14 @@
       "deb": {
         "depends": ["python3", "python3-pip"],
         "preInstallScript": "scripts/preinst.sh",
-        "postInstallScript": "scripts/postinst.sh"
+        "postInstallScript": "scripts/postinst.sh",
+        "postRemoveScript": "scripts/postrm.sh"
       },
       "rpm": {
         "depends": ["python3", "python3-pip"],
         "preInstallScript": "scripts/preinst.sh",
-        "postInstallScript": "scripts/postinst.sh"
+        "postInstallScript": "scripts/postinst.sh",
+        "postRemoveScript": "scripts/postrm.sh"
       }
     }
   },

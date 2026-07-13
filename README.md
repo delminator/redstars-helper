@@ -18,6 +18,23 @@ sudo apt install ./redstars-helper_0.1.0_amd64.deb
 The app lives in your application menu as **Redstars Helper**, runs in the
 system tray, and serves on `http://localhost:8080/`.
 
+## Ouvrir RedStars en console
+
+Le paquet installe deux commandes courtes sur le `PATH`
+(`/usr/local/bin/redhelper` et `/usr/local/bin/minitel`) pour lancer le
+client console dans le terminal courant, sans passer par le menu du tray :
+
+```bash
+redhelper console              # client console, taille réelle du terminal
+redhelper console --app eau    # options passées telles quelles à helper.py
+redhelper minitel              # raccourci : console 40×24, façon Minitel
+minitel                        # idem, via le lien direct « minitel »
+```
+
+`redhelper help` affiche l'aide ; `redhelper console --help` liste toutes les
+options du client (`--user`, `--app`, `--accessible`, …). Sans argument, le
+binaire démarre l'agent dans la barre système comme avant.
+
 ## What it does
 
 - Static HTTP server for the autoencoder demo page (`output/demo/`).

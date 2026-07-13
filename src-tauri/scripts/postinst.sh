@@ -66,4 +66,23 @@ RULE
 udevadm control --reload-rules >/dev/null 2>&1 || true
 udevadm trigger --subsystem-match=tty >/dev/null 2>&1 || true
 
+# --- Commandes courtes sur le PATH -----------------------------------------
+# Le binaire s'installe en /usr/bin/redstars-helper — long à taper, et pas
+# évident quand on veut juste « ouvrir RedStars en console ». On pose deux
+# liens symboliques dans /usr/local/bin (sur le PATH, réservé aux ajouts
+# locaux, hors du contrôle de dpkg) :
+#
+#   redhelper  → le binaire. `redhelper console` / `redhelper minitel`.
+#   minitel    → le binaire. Appelé sous ce nom, il ouvre direct la console
+#                40×24 (le binaire teste son propre argv[0] — voir src/cli.rs).
+#
+# Best-effort : si /usr/local/bin n'existe pas on le crée ; toute erreur est
+# tolérée et ne bloque jamais l'installation. Le postrm retire ces liens.
+BIN="/usr/bin/redstars-helper"
+if [ -x "$BIN" ]; then
+    mkdir -p /usr/local/bin 2>/dev/null || true
+    ln -sf "$BIN" /usr/local/bin/redhelper 2>/dev/null || true
+    ln -sf "$BIN" /usr/local/bin/minitel   2>/dev/null || true
+fi
+
 exit 0
