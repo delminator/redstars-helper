@@ -35,6 +35,29 @@ minitel                        # idem, via le lien direct « minitel »
 options du client (`--user`, `--app`, `--accessible`, …). Sans argument, le
 binaire démarre l'agent dans la barre système comme avant.
 
+### D'où viennent `redhelper` / `minitel`
+
+Deux mécanismes complémentaires, pour couvrir tous les modes d'installation :
+
+- **Paquet `.deb` / `.rpm`** — le `postinst` pose les liens dans
+  `/usr/local/bin` (disponibles tout de suite, pour tous les utilisateurs).
+- **À chaque démarrage** — le binaire (re)crée aussi de petits lanceurs dans
+  `~/.local/bin`. C'est ce qui rend les commandes disponibles avec l'**AppImage**
+  et sur un **OS immuable** (Fedora Silverblue/Kinoite, uBlue…), où `/usr` est en
+  lecture seule et les scriptlets du paquet ne peuvent rien y écrire. Un fichier
+  que vous auriez posé vous-même sous ces noms n'est jamais écrasé.
+
+  (`~/.local/bin` est sur le `PATH` par défaut sous Fedora ; sous Debian/Ubuntu il
+  y est pris en compte à la prochaine session une fois le dossier créé.)
+
+Avec l'AppImage, l'interception des arguments marche aussi directement sur le
+fichier, sans lanceur :
+
+```bash
+./Redstars.Helper_*_amd64.AppImage console
+./Redstars.Helper_*_amd64.AppImage minitel
+```
+
 ## What it does
 
 - Static HTTP server for the autoencoder demo page (`output/demo/`).

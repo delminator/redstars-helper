@@ -35,6 +35,13 @@ const SCRIPT_NAME: &str = "helper.py";
 /// invocation console, on la lance en avant-plan et on NE REVIENT PAS (exit avec
 /// le code de Python). Sinon on rend la main : `run()` démarre le tray normal.
 pub fn intercept() {
+    // Poser/rafraîchir les lanceurs courts dans ~/.local/bin. Fait à CHAQUE
+    // démarrage (tray, console, autostart…), avant tout le reste : c'est le
+    // binaire en cours d'exécution qui les crée, donc ça marche aussi pour
+    // l'AppImage et pour un OS immuable (Fedora Silverblue…) où le postinst du
+    // paquet ne peut rien écrire dans /usr. No-op hors Linux.
+    ensure_launchers();
+
     let args: Vec<String> = std::env::args().collect();
 
     // Nom de commande (argv[0]) : appelé via le lien `minitel` → mode Minitel
@@ -201,6 +208,98 @@ fn pick_python() -> String {
 /// pour ne pas empoisonner un python système enfant.
 fn clean_python_command(py: &str) -> Command {
     crate::clean_python_command(py)
+}
+
+/// Marqueur en tête des lanceurs qu'on génère, pour les reconnaître et les
+/// rafraîchir sans jamais écraser un fichier que l'utilisateur aurait posé.
+#[cfg(target_os = "linux")]
+const LAUNCHER_MARKER: &str = "# redstars-helper launcher (auto-généré)";
+
+/// Pose/rafraîchit `~/.local/bin/redhelper` et `~/.local/bin/minitel`.
+///
+/// Complément aux liens du postinst (paquet .deb/.rpm) : ceci marche AUSSI pour
+/// l'AppImage et pour un OS immuable (Fedora Silverblue/Kinoite, uBlue…) où
+/// /usr est en lecture seule et les scriptlets du paquet ne peuvent rien y
+/// écrire — parce que c'est le binaire en cours d'exécution qui les crée, dans
+/// le HOME de l'utilisateur.
+///
+/// On écrit de petits scripts shell plutôt que des liens symboliques : lancée
+/// via un lien nommé « minitel », l'AppImage re-exec son binaire interne et ne
+/// préserve pas toujours argv[0] — le mode Minitel ne se déclencherait pas. Le
+/// script, lui, passe explicitement la sous-commande à la cible.
+#[cfg(target_os = "linux")]
+fn ensure_launchers() {
+    let target = match launcher_target() {
+        Some(t) => t,
+        None => return,
+    };
+    let home = match std::env::var_os("HOME") {
+        Some(h) => PathBuf::from(h),
+        None => return,
+    };
+    let bindir = home.join(".local/bin");
+    if std::fs::create_dir_all(&bindir).is_err() {
+        return;
+    }
+    let t = target.display();
+    write_launcher(
+        &bindir.join("redhelper"),
+        &format!("#!/bin/sh\n{LAUNCHER_MARKER}\nexec \"{t}\" \"$@\"\n"),
+    );
+    write_launcher(
+        &bindir.join("minitel"),
+        &format!("#!/bin/sh\n{LAUNCHER_MARKER}\nexec \"{t}\" minitel \"$@\"\n"),
+    );
+}
+
+#[cfg(not(target_os = "linux"))]
+fn ensure_launchers() {
+    // macOS / Windows : pas de convention ~/.local/bin, et l'install n'a pas le
+    // même problème de /usr en lecture seule. Rien à faire.
+}
+
+/// Chemin STABLE et lançable du binaire, cible des lanceurs.
+/// - AppImage : `current_exe()` pointe dans le montage squashfs éphémère
+///   (/tmp/.mount_…) qui disparaît à la fermeture — inutilisable comme cible.
+///   Le vrai fichier lançable est le .AppImage, exposé dans $APPIMAGE.
+/// - .deb / .rpm / rpm-ostree / dev : `current_exe()` est stable.
+#[cfg(target_os = "linux")]
+fn launcher_target() -> Option<PathBuf> {
+    if let Some(appimage) = std::env::var_os("APPIMAGE") {
+        let p = PathBuf::from(appimage);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    std::env::current_exe().ok()
+}
+
+/// Écrit un lanceur si l'emplacement est libre ou déjà l'un des nôtres (on le
+/// rafraîchit alors vers la cible courante — utile quand l'AppImage a été
+/// déplacé/mis à jour). On ne touche JAMAIS un fichier étranger, ni un lien
+/// symbolique posé par l'utilisateur.
+#[cfg(target_os = "linux")]
+fn write_launcher(path: &std::path::Path, contents: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    match std::fs::symlink_metadata(path) {
+        Ok(md) => {
+            if !md.file_type().is_file() {
+                return; // lien symbolique / répertoire / autre : on n'y touche pas
+            }
+            match std::fs::read_to_string(path) {
+                Ok(cur) if cur.contains(LAUNCHER_MARKER) => {
+                    if cur == contents {
+                        return; // déjà à jour → pas de réécriture inutile
+                    }
+                }
+                _ => return, // illisible ou étranger : on laisse tel quel
+            }
+        }
+        Err(_) => {} // absent : on crée
+    }
+    if std::fs::write(path, contents).is_ok() {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+    }
 }
 
 fn print_usage() {
