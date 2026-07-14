@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.43'
+VERSION = '0.5.44'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -1539,6 +1539,34 @@ class Handler(SimpleHTTPRequestHandler):
         split = urlsplit(self.path)
         ep    = split.path[len('/helper'):]
         query = parse_qs(split.query)
+        if ep == '/session':
+            # Conserver la session, SANS ouvrir de terminal.
+            #
+            # Un bouton « ouvrir en console » ne suffit pas : il faut y penser. Alors
+            # que le tableau de bord, lui, est ouvert. Tant qu'on est connecté au web,
+            # le helper doit avoir une session fraîche — et `minitel` tapé dans un
+            # terminal, trois jours plus tard, marche sans rien demander.
+            #
+            # Même exigence d'origine que /console : cette route n'ouvre rien, mais elle
+            # ÉCRIT un secret sur le disque, et le CORS permissif du reste de /helper/*
+            # laisserait n'importe quel site nous refiler le sien.
+            origin = self.headers.get('Origin', '')
+            if origin not in ALLOWED_ORIGINS:
+                self._json(403, {'error': f'origine refusée: {origin or "(absente)"}'})
+                return
+            try:
+                b = self._read_json()
+                token = (b.get('token') or '').strip()
+                refresh = (b.get('refresh') or '').strip()
+                if not token or not refresh:
+                    # Sans refresh, il n'y a rien à conserver qui vaille : un jeton
+                    # d'accès seul est mort dans quinze minutes.
+                    self._json(400, {'error': 'jeton et refresh requis'}); return
+                _con_session_save(token, refresh, (b.get('api_url') or DEFAULT_API_URL).strip())
+                self._json(200, {'ok': True})       # jamais d'écho du jeton
+            except Exception as e:
+                self._json(500, {'error': f'{type(e).__name__}: {e}'})
+            return
         if ep == '/console':
             # Ouvrir un terminal est d'une tout autre gravité que lire une balance.
             # `end_headers` accorde `Access-Control-Allow-Origin: *` à tout
@@ -1556,6 +1584,19 @@ class Handler(SimpleHTTPRequestHandler):
                 token = (b.get('token') or '').strip()
                 if not token:
                     self._json(400, {'error': 'jeton manquant'}); return
+
+                # Le navigateur nous passe AUSSI de quoi renouveler. Sans ça, la session
+                # qu'il vient de nous offrir est morte dans un quart d'heure et la
+                # prochaine console redemande le mot de passe — ce qui est exactement
+                # l'ennui qu'on prétendait supprimer.
+                refresh = (b.get('refresh') or '').strip()
+                api = (b.get('api_url') or DEFAULT_API_URL).strip()
+                if refresh:
+                    try:
+                        _con_session_save(token, refresh, api)
+                    except OSError as e:
+                        print(f"[helper] session non conservée : {e}", file=sys.stderr)
+
                 term = _con_spawn_terminal(token, b)
                 if not term:
                     self._json(503, {'error': "aucun émulateur de terminal trouvé — définissez $TERMINAL"})
@@ -2471,9 +2512,11 @@ def _route_gpu_if_available():
 # ============================================================================
 
 import argparse
+import base64
 import getpass
 import sys
 import termios
+import time
 import tty
 import urllib.error
 import urllib.parse
@@ -2520,6 +2563,95 @@ def _con_frame(app_url, token, **q):
         return {"error": json.loads(e.read() or b"{}").get("error", f"HTTP {e.code}")}
 
 
+
+# ── La session, conservée ────────────────────────────────────────────────────
+#
+# Le jeton d'accès vit QUINZE MINUTES. Celui que le navigateur nous passe est donc
+# périmé avant qu'on ait fini de lire l'écran d'accueil, et relancer la console
+# depuis la barre système redemandait le mot de passe à chaque fois — dans un
+# terminal, sans gestionnaire de mots de passe, en aveugle. C'est précisément la
+# friction que tout ce travail existe pour supprimer, et elle était intacte.
+#
+# Le refresh_token, lui, vit SEPT JOURS. On garde donc les deux : on se connecte une
+# fois dans le navigateur, et la console marche pendant une semaine sans rien taper.
+#
+# Le fichier est en 0600, dans le répertoire d'état de l'utilisateur. C'est la même
+# exposition qu'un jeton dans /proc/<pid>/environ — le propriétaire et root — et la
+# même que celle du trousseau du navigateur juste à côté. Ce qu'on n'accepte pas,
+# c'est argv, que TOUS les utilisateurs de la machine peuvent lire.
+
+def _con_session_path():
+    base = os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state")
+    d = os.path.join(base, "redstars")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    return os.path.join(d, "session.json")
+
+
+def _con_session_save(access, refresh, api):
+    """Écrit la session. On ne la garde QUE si on a de quoi la renouveler : un jeton
+    d'accès seul serait mort dans un quart d'heure, et le stocker ne ferait que
+    laisser traîner un secret sans rien résoudre."""
+    if not refresh:
+        return
+    path = _con_session_path()
+    tmp = path + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        json.dump({"access_token": access, "refresh_token": refresh, "api": api}, f)
+    os.replace(tmp, path)          # atomique : jamais de fichier à moitié écrit
+
+
+def _con_jwt_expired(tok, margin=60):
+    """Le jeton est-il périmé (ou sur le point de l'être) ?
+
+    On lit le `exp` du JWT plutôt que d'attendre un 401 : partir sur un jeton mort,
+    c'est un aller-retour réseau perdu et un message d'erreur que l'utilisateur n'a
+    pas à voir. La marge évite d'expirer PENDANT la requête."""
+    try:
+        payload = tok.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        exp = json.loads(base64.urlsafe_b64decode(payload)).get("exp", 0)
+        return time.time() + margin >= exp
+    except Exception:
+        return True                # illisible = à jeter
+
+
+def _con_session_load(api):
+    """Rend un jeton d'accès VALIDE, ou None. Renouvelle en silence si besoin."""
+    try:
+        with open(_con_session_path()) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return None
+
+    access, refresh = d.get("access_token"), d.get("refresh_token")
+    if access and not _con_jwt_expired(access):
+        return access
+    if not refresh:
+        return None
+
+    # Le refresh passe par un EN-TÊTE, pas par le corps. Le mettre dans le corps
+    # renvoie « Refresh token required », ce qui ressemble à un jeton absent alors
+    # que c'est un jeton mal adressé.
+    try:
+        r = urllib.request.Request(
+            f"{api}/api/v1/auth/refresh",
+            headers={"Content-Type": "application/json", "X-Refresh-Token": refresh},
+            method="POST")
+        with urllib.request.urlopen(r, context=_CON_CTX, timeout=15) as resp:
+            new = json.loads(resp.read() or b"{}")
+    except Exception:
+        return None                # refresh mort ou hors ligne : on redemandera
+
+    access = new.get("access_token")
+    if not access:
+        return None
+    # Rotation : le serveur PEUT renvoyer un nouveau refresh. Garder l'ancien alors
+    # qu'il vient d'être révoqué, c'est se déconnecter tout seul dans sept jours.
+    _con_session_save(access, new.get("refresh_token") or refresh, api)
+    return access
+
+
 # ── Clavier ─────────────────────────────────────────────────────────────────
 
 def _con_read_key(fd):
@@ -2562,9 +2694,13 @@ def _con_pick(items, label, render):
 
 
 def _con_home_accessible(app_url, token, org, role, lang):
-    """L'accueil, en liste numérotée. Renvoie l'identifiant de l'appli choisie."""
-    url = f"{app_url}/api/console/frame/?" + urllib.parse.urlencode(
-        dict(org=org, role=role, lang=lang, a11y=1))
+    """Une liste numérotée : les organisations si `org` est absent, sinon les applis.
+    Renvoie l'identifiant de ce qui a été choisi (oid ou app id) — c'est la TRAME qui
+    le dit, jamais le client."""
+    q = dict(role=role, lang=lang, a11y=1)
+    if org:
+        q["org"] = org
+    url = f"{app_url}/api/console/frame/?" + urllib.parse.urlencode(q)
     try:
         txt = _con_req(url, headers={"Authorization": f"Bearer {token}"}, raw=True).decode()
     except urllib.error.HTTPError as e:
@@ -2917,22 +3053,49 @@ def run_console(argv):
             except OSError:
                 pass
     token = token or os.environ.pop("REDSTARS_TOKEN", "") or ""
+
+    # Ordre : ce qu'on vient de recevoir, puis ce qu'on avait gardé, puis — en dernier
+    # recours seulement — le mot de passe. Le taper dans un terminal (sans gestionnaire
+    # de mots de passe, sans collage fiable, sans écho) est la friction qui fait qu'on
+    # n'utilise pas la console. Elle ne doit se produire QU'UNE FOIS.
+    if not token:
+        token = _con_session_load(a.api_url) or ""
+        if token:
+            print("Session retrouvée — pas de mot de passe à ressaisir.\n")
+
     if token:
-        print("Session transmise par le navigateur — pas de mot de passe à ressaisir.\n")
+        pass
     else:
         user = a.user or input("Utilisateur : ")
         pw = a.password or getpass.getpass("Mot de passe : ")
         try:
-            token = _con_login(a.api_url, user, pw)
+            d = _con_req(f"{a.api_url}/api/v1/auth/login", {"username": user, "password": pw})
+            token = d["access_token"]
+            # On garde de quoi RENOUVELER, pas seulement de quoi entrer. Un jeton
+            # d'accès seul vit quinze minutes : le stocker ne ferait que laisser
+            # traîner un secret sans épargner la prochaine saisie.
+            _con_session_save(token, d.get("refresh_token"), a.api_url)
         except urllib.error.HTTPError as e:
             sys.exit(f"Connexion refusée (HTTP {e.code}).")
 
+    # L'organisation, dessinée par le MOTEUR comme tout le reste.
+    #
+    # C'était le dernier écran que le client peignait lui-même : une liste texte,
+    # imprimée avant même de demander quoi que ce soit au moteur. Le premier écran
+    # après le mot de passe était donc le seul que personne n'avait dessiné.
     o = _con_orgs(a.api_url, token)
     if not o:
         sys.exit("Aucune organisation.")
-    org = o[0] if len(o) == 1 else _con_pick(o, "Organisation", lambda x: x["name"])
-    if not org:
+    if len(o) == 1:
+        org_oid = o[0]["oid"]
+    elif a.accessible:
+        org_oid = _con_home_accessible(a.app_url, token, None, a.role, a.lang)
+    else:
+        act = _con_run(a.app_url, token, None, None, a.role, None, cols, rows, a.lang)
+        org_oid = act.get("to") if act else None
+    if not org_oid:
         return
+    org = next((x for x in o if x["oid"] == org_oid), None) or {"oid": org_oid, "name": ""}
 
     app = a.app
     if not app:
