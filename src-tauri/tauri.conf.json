@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Redstars Helper",
-  "version": "0.3.6",
+  "version": "0.4.0",
   "identifier": "fr.redlinks.redstars-helper",
   "build": {
     "frontendDist": "../src",
@@ -62,12 +62,14 @@
       "deb": {
         "depends": ["python3", "python3-pip"],
         "preInstallScript": "scripts/preinst.sh",
-        "postInstallScript": "scripts/postinst.sh"
+        "postInstallScript": "scripts/postinst.sh",
+        "postRemoveScript": "scripts/postrm.sh"
       },
       "rpm": {
         "depends": ["python3", "python3-pip"],
         "preInstallScript": "scripts/preinst.sh",
-        "postInstallScript": "scripts/postinst.sh"
+        "postInstallScript": "scripts/postinst.sh",
+        "postRemoveScript": "scripts/postrm.sh"
       }
     }
   },

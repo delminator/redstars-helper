@@ -2,6 +2,8 @@
 // binary (Linux/Mac) and a static lib (mobile platforms).
 
 mod cleanup;
+#[cfg(desktop)]
+mod cli;
 mod script_updater;
 mod shell_updater;
 
@@ -23,7 +25,7 @@ struct HelperProc(Mutex<Option<Child>>);
 /// own stdlib ("No module named 'encodings'"). Removing them lets the system
 /// interpreter initialise normally. Harmless when not running as an AppImage
 /// (these are rarely set, and a system python needs none of them).
-fn clean_python_command(py: &str) -> Command {
+pub(crate) fn clean_python_command(py: &str) -> Command {
     let mut c = Command::new(py);
     for var in ["LD_LIBRARY_PATH", "PYTHONHOME", "PYTHONPATH", "LD_PRELOAD"] {
         c.env_remove(var);
@@ -240,7 +242,7 @@ fn restart_helper_proc(app: &AppHandle) {
 /// who manage python via pyenv don't get a stale system python when
 /// the desktop app's spawn environment lacks ~/.pyenv/shims in PATH.
 #[cfg(unix)]
-fn python_candidates() -> Vec<String> {
+pub(crate) fn python_candidates() -> Vec<String> {
     let mut v = Vec::new();
     if let Ok(home) = std::env::var("HOME") {
         v.push(format!("{}/.pyenv/shims/python3", home));
@@ -254,7 +256,7 @@ fn python_candidates() -> Vec<String> {
     v
 }
 #[cfg(windows)]
-fn python_candidates() -> Vec<String> {
+pub(crate) fn python_candidates() -> Vec<String> {
     vec![
         "python".to_string(),
         "python3".to_string(),
@@ -275,6 +277,13 @@ fn restart_helper(app: AppHandle, _proc: State<HelperProc>) -> Result<(), String
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Ligne de commande d'abord : `redhelper console` / `minitel` ouvrent le
+    // client console dans CE terminal et sortent, sans jamais démarrer le tray.
+    // Une invocation ordinaire (aucun arg, `--minimized`, URL) rend la main et
+    // le tray démarre normalement. No-op sur mobile (pas de sous-commande).
+    #[cfg(desktop)]
+    cli::intercept();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())

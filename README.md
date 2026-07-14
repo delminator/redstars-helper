@@ -10,13 +10,83 @@ this helper, and surfaces a download banner when it's missing or outdated.
 
 ## Install (Linux)
 
+### En une commande (recommandé)
+
 ```bash
-sudo apt install ./redstars-helper_0.1.0_amd64.deb
-# or extract to ~/.local for non-system install
+curl -fsSL https://raw.githubusercontent.com/delminator/redstars-helper/main/install.sh | sh
+```
+
+Le script télécharge la dernière release et choisit tout seul le bon format :
+
+- **OS immuable** (Fedora Silverblue/Kinoite, uBlue…) ou `/usr` en lecture
+  seule → **AppImage** dans `~/.local/lib` (aucune écriture système).
+- **Debian / Ubuntu / Mint** → paquet **`.deb`** (apt/dpkg, `sudo`).
+- **Fedora / RHEL / openSUSE** → paquet **`.rpm`** (dnf/zypper, `sudo`).
+
+Relancer la même commande **met à jour** vers la dernière version. Options :
+`… | sh -s -- --appimage` (forcer un format : `--deb`, `--rpm`), ou
+`… | sh -s -- --uninstall` pour désinstaller.
+
+Une fois installé, la mise à jour peut aussi se faire depuis le helper :
+
+```bash
+redhelper upgrade              # télécharge + installe la dernière version
+redhelper upgrade --uninstall  # désinstalle
+```
+
+### À la main
+
+```bash
+# Debian / Ubuntu / Mint
+sudo apt install ./Redstars.Helper_*_amd64.deb
+# Fedora / RHEL / openSUSE
+sudo dnf install ./Redstars.Helper-*.x86_64.rpm
+# AppImage (universel, y compris OS immuable)
+chmod +x Redstars.Helper_*_amd64.AppImage && ./Redstars.Helper_*_amd64.AppImage
 ```
 
 The app lives in your application menu as **Redstars Helper**, runs in the
 system tray, and serves on `http://localhost:8080/`.
+
+## Ouvrir RedStars en console
+
+Le paquet installe deux commandes courtes sur le `PATH`
+(`/usr/local/bin/redhelper` et `/usr/local/bin/minitel`) pour lancer le
+client console dans le terminal courant, sans passer par le menu du tray :
+
+```bash
+redhelper console              # client console, taille réelle du terminal
+redhelper console --app eau    # options passées telles quelles à helper.py
+redhelper minitel              # raccourci : console 40×24, façon Minitel
+minitel                        # idem, via le lien direct « minitel »
+```
+
+`redhelper help` affiche l'aide ; `redhelper console --help` liste toutes les
+options du client (`--user`, `--app`, `--accessible`, …). Sans argument, le
+binaire démarre l'agent dans la barre système comme avant.
+
+### D'où viennent `redhelper` / `minitel`
+
+Deux mécanismes complémentaires, pour couvrir tous les modes d'installation :
+
+- **Paquet `.deb` / `.rpm`** — le `postinst` pose les liens dans
+  `/usr/local/bin` (disponibles tout de suite, pour tous les utilisateurs).
+- **À chaque démarrage** — le binaire (re)crée aussi de petits lanceurs dans
+  `~/.local/bin`. C'est ce qui rend les commandes disponibles avec l'**AppImage**
+  et sur un **OS immuable** (Fedora Silverblue/Kinoite, uBlue…), où `/usr` est en
+  lecture seule et les scriptlets du paquet ne peuvent rien y écrire. Un fichier
+  que vous auriez posé vous-même sous ces noms n'est jamais écrasé.
+
+  (`~/.local/bin` est sur le `PATH` par défaut sous Fedora ; sous Debian/Ubuntu il
+  y est pris en compte à la prochaine session une fois le dossier créé.)
+
+Avec l'AppImage, l'interception des arguments marche aussi directement sur le
+fichier, sans lanceur :
+
+```bash
+./Redstars.Helper_*_amd64.AppImage console
+./Redstars.Helper_*_amd64.AppImage minitel
+```
 
 ## What it does
 
