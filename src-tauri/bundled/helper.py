@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.40'
+VERSION = '0.5.41'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -1539,6 +1539,32 @@ class Handler(SimpleHTTPRequestHandler):
         split = urlsplit(self.path)
         ep    = split.path[len('/helper'):]
         query = parse_qs(split.query)
+        if ep == '/console':
+            # Ouvrir un terminal est d'une tout autre gravité que lire une balance.
+            # `end_headers` accorde `Access-Control-Allow-Origin: *` à tout
+            # /helper/* dont l'origine est inconnue — c'est-à-dire que N'IMPORTE
+            # QUEL site peut appeler nos routes. On ne s'appuie donc PAS dessus
+            # ici : cette route exige explicitement une origine de la liste, et
+            # refuse tout le reste. Le CORS dit au navigateur ce qu'il a le droit
+            # de lire ; il ne dit rien à un client qui n'est pas un navigateur.
+            origin = self.headers.get('Origin', '')
+            if origin not in ALLOWED_ORIGINS:
+                self._json(403, {'error': f'origine refusée: {origin or "(absente)"}'})
+                return
+            try:
+                b = self._read_json()
+                token = (b.get('token') or '').strip()
+                if not token:
+                    self._json(400, {'error': 'jeton manquant'}); return
+                term = _con_spawn_terminal(token, b)
+                if not term:
+                    self._json(503, {'error': "aucun émulateur de terminal trouvé — définissez $TERMINAL"})
+                    return
+                # On ne renvoie JAMAIS le jeton, même en écho de la requête.
+                self._json(200, {'ok': True, 'terminal': term})
+            except Exception as e:
+                self._json(500, {'error': f'{type(e).__name__}: {e}'})
+            return
         if ep == '/codec/encode-hash':
             # data brute -> hash (latents purs, SANS blob/sidecar). Padding zéro à 1024.
             try:
@@ -2638,6 +2664,71 @@ def _con_run_accessible(app_url, token, app, org, role, slot, lang):
         print("Tapez un numéro, ou 0 pour revenir.")
 
 
+
+# ── Handoff console : le navigateur a le jeton, nous avons le terminal ───────
+#
+# Le raccourci évident était `redstars-helper://console?token=eyJ…` : le
+# navigateur ouvre l'URI, xdg-open la passe au helper. Sauf que xdg-open la
+# passe en ARGV — et argv est lisible par TOUS les utilisateurs de la machine
+# (`ps aux`), en plus d'atterrir dans la base « récemment utilisé » du bureau et,
+# selon les systèmes, dans journald. Un jeton de session dans une URI, c'est un
+# jeton de session offert à quiconque a un shell sur la même machine.
+#
+# On passe donc par la socket loopback qui existe DÉJÀ et à laquelle la page de
+# login parle déjà (l'activation WebGPU). Le jeton fait navigateur → 127.0.0.1 →
+# variable d'environnement → processus fils. Il ne touche jamais une URL, jamais
+# une ligne de commande, jamais un log.
+
+_CON_TERMINALS = [
+    ("foot", ["-e"]), ("alacritty", ["-e"]), ("kitty", []),
+    ("wezterm", ["start", "--"]), ("gnome-terminal", ["--"]),
+    ("konsole", ["-e"]), ("xfce4-terminal", ["-e"]), ("xterm", ["-e"]),
+]
+
+
+def _con_spawn_terminal(token, opts):
+    """Ouvre un terminal sur le client console, jeton passé par l'environnement."""
+    import shutil
+    import subprocess
+
+    script = os.path.abspath(__file__)
+    argv = [sys.executable or "python3", script, "console"]
+    for k in ("app", "role", "lang", "app-url", "api-url"):
+        v = opts.get(k.replace("-", "_"))
+        if v:
+            argv += [f"--{k}", str(v)]
+    if opts.get("minitel"):
+        argv.append("--minitel")
+    if opts.get("accessible"):
+        argv.append("--accessible")
+
+    # shlex.quote sur CHAQUE argument : ces valeurs viennent d'une requête HTTP,
+    # et elles finissent dans un `sh -lc`. Sans ça, un `app` valant `x; rm -rf ~`
+    # serait exécuté. L'origine est déjà filtrée, mais une défense qui repose sur
+    # une seule barrière n'est pas une défense.
+    import shlex
+    cmd = " ".join(shlex.quote(a) for a in argv)
+    inner = f"{cmd}; echo; read -p 'Entrée pour fermer…' _"
+
+    env = dict(os.environ)
+    env["REDSTARS_TOKEN"] = token     # le seul canal par lequel le jeton passe
+
+    terms = list(_CON_TERMINALS)
+    if os.environ.get("TERMINAL"):
+        terms.insert(0, (os.environ["TERMINAL"], ["-e"]))
+
+    for term, pre in terms:
+        if not shutil.which(term):
+            continue
+        try:
+            subprocess.Popen([term, *pre, "sh", "-lc", inner], env=env,
+                             start_new_session=True)
+            return term
+        except Exception:
+            continue
+    return None
+
+
 def run_console(argv):
     ap = argparse.ArgumentParser(prog="helper.py console", description="RedStars en console")
     ap.add_argument("--app-url", default=os.environ.get("REDSTARS_APP_URL", DEFAULT_APP_URL))
@@ -2668,12 +2759,24 @@ def run_console(argv):
     tc, tr = term_size()
     cols, rows = (40, 24) if a.minitel else (a.cols or tc, a.rows or tr)
 
-    user = a.user or input("Utilisateur : ")
-    pw = a.password or getpass.getpass("Mot de passe : ")
-    try:
-        token = _con_login(a.api_url, user, pw)
-    except urllib.error.HTTPError as e:
-        sys.exit(f"Connexion refusée (HTTP {e.code}).")
+    # Le navigateur a DÉJÀ authentifié l'utilisateur : il nous passe le jeton de
+    # session, et on saute la saisie du mot de passe. Le jeton arrive par
+    # l'ENVIRONNEMENT, jamais par argv — `ps aux` montre argv à tous les
+    # utilisateurs de la machine, et un jeton de session dans argv, c'est un
+    # jeton de session offert à quiconque a un shell sur la même machine.
+    #
+    # Pour la même raison il n'y a volontairement PAS de `--token` : une option
+    # qu'on n'expose pas est une option que personne ne mettra dans un script.
+    token = os.environ.pop("REDSTARS_TOKEN", "") or ""
+    if token:
+        print("Session transmise par le navigateur — pas de mot de passe à ressaisir.\n")
+    else:
+        user = a.user or input("Utilisateur : ")
+        pw = a.password or getpass.getpass("Mot de passe : ")
+        try:
+            token = _con_login(a.api_url, user, pw)
+        except urllib.error.HTTPError as e:
+            sys.exit(f"Connexion refusée (HTTP {e.code}).")
 
     o = _con_orgs(a.api_url, token)
     if not o:
