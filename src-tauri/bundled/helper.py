@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.41'
+VERSION = '0.5.43'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -2509,6 +2509,10 @@ def _con_orgs(api, token):
 # ── Le moteur : on ne fait que DEMANDER une trame ───────────────────────────
 
 def _con_frame(app_url, token, **q):
+    # On n'envoie pas ce qu'on n'a pas. Sans ce filtre, `app=None` part sur le réseau
+    # comme la chaîne "None" — et le moteur cherche consciencieusement une application
+    # qui s'appelle None. Omettre `app`, c'est demander l'ACCUEIL.
+    q = {k: v for k, v in q.items() if v is not None}
     url = f"{app_url}/api/console/frame/?" + urllib.parse.urlencode(q)
     try:
         return _con_req(url, headers={"Authorization": f"Bearer {token}"})
@@ -2557,10 +2561,45 @@ def _con_pick(items, label, render):
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
+def _con_home_accessible(app_url, token, org, role, lang):
+    """L'accueil, en liste numérotée. Renvoie l'identifiant de l'appli choisie."""
+    url = f"{app_url}/api/console/frame/?" + urllib.parse.urlencode(
+        dict(org=org, role=role, lang=lang, a11y=1))
+    try:
+        txt = _con_req(url, headers={"Authorization": f"Bearer {token}"}, raw=True).decode()
+    except urllib.error.HTTPError as e:
+        print(json.loads(e.read() or b"{}").get("error", f"Erreur HTTP {e.code}"))
+        return None
+    print()
+    print(txt)
+
+    # Il faut aussi la trame JSON : le texte donne les numéros à un humain, mais c'est
+    # la trame qui dit à quelle APPLI chaque numéro mène. Le client n'invente jamais
+    # cette correspondance — il la lit.
+    f = _con_frame(app_url, token, org=org, role=role, lang=lang)
+    foc = f.get("focusables", [])
+    try:
+        n = input("> ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    if not n.isdigit() or not (1 <= int(n) <= len(foc)):
+        return None
+    return (foc[int(n) - 1].get("action") or {}).get("to")
+
+
 # ── La boucle ───────────────────────────────────────────────────────────────
 
 def _con_run(app_url, token, app, org, role, slot, cols, rows, lang):
-    cursor = 0
+    # On suit le NUMÉRO du focusable, pas sa ligne.
+    #
+    # Une ligne pouvait porter une seule chose à sélectionner — jusqu'à l'accueil, où
+    # trois tuiles d'application partagent une rangée. Repérer le curseur par sa ligne
+    # devenait alors ambigu : les flèches atterrissaient sur la première tuile de la
+    # rangée, et Entrée ouvrait une autre appli que celle qu'on croyait viser.
+    #
+    # Le numéro est le même que celui qu'on tape en mode accessible. Une seule notion
+    # de « quoi est sélectionné », partagée par les deux modes.
+    sel = 1
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
@@ -2570,7 +2609,7 @@ def _con_run(app_url, token, app, org, role, slot, cols, rows, lang):
             # fenêtre. Le client n'a pas d'état de défilement à tenir — et donc pas
             # d'occasion de le désynchroniser.
             f = _con_frame(app_url, token, app=app, org=org, role=role, slot=slot,
-                      cursor=cursor, cols=cols, rows=rows, lang=lang)
+                      sel=sel, cols=cols, rows=rows, lang=lang)
             if "error" in f:
                 sys.stdout.write("\x1b[2J\x1b[H\x1b[31m" + f["error"].replace("\n", "\r\n") + "\x1b[0m\r\n\r\n")
                 sys.stdout.write("\x1b[2mUne touche pour revenir…\x1b[0m")
@@ -2584,31 +2623,34 @@ def _con_run(app_url, token, app, org, role, slot, cols, rows, lang):
 
             k = _con_read_key(fd)
 
-            # Le curseur est un index de LIGNE, et toutes les lignes ne sont pas
-            # focusables : un titre, une ligne vide, un en-tête de colonnes n'ont
-            # rien à sélectionner. On se déplace donc de focusable en focusable —
-            # et c'est la TRAME qui dit lesquels, pas nous.
+            # Toutes les lignes ne sont pas sélectionnables — un titre, une ligne vide,
+            # un en-tête de colonnes n'ont rien à choisir. On se déplace donc de
+            # focusable en focusable, et c'est la TRAME qui dit lesquels, pas nous.
             foc = f.get("focusables", [])
-            here = next((i for i, x in enumerate(foc) if x["line"] == f.get("cursor")), 0)
+            here = next((i for i, x in enumerate(foc) if x.get("n") == sel), 0)
+            step = max(1, rows - 5)
 
             if k == "down" and foc:
-                cursor = foc[min(here + 1, len(foc) - 1)]["line"]
+                sel = foc[min(here + 1, len(foc) - 1)]["n"]
             elif k == "up" and foc:
-                cursor = foc[max(here - 1, 0)]["line"]
+                sel = foc[max(here - 1, 0)]["n"]
             elif k == "next" and foc:
-                cursor = foc[min(here + max(1, rows - 5), len(foc) - 1)]["line"]
+                sel = foc[min(here + step, len(foc) - 1)]["n"]
             elif k == "prev" and foc:
-                cursor = foc[max(here - max(1, rows - 5), 0)]["line"]
+                sel = foc[max(here - step, 0)]["n"]
             elif k == "enter":
-                # Ce que fait Entrée est DIT PAR LA TRAME, pas décidé ici.
+                # Ce que fait Entrée est DIT PAR LA TRAME, pas décidé ici. Le client
+                # ne sait pas ce qu'est une application ; il sait suivre une route.
                 if 0 <= here < len(foc):
                     act = foc[here].get("action") or {}
+                    if act.get("kind") == "route":
+                        return act
                     sys.stdout.write("\r\n\x1b[33m→ " + json.dumps(act, ensure_ascii=False) + "\x1b[0m\r\n")
                     sys.stdout.write("\x1b[2m(le rendu des modales n'est pas encore écrit — une touche)\x1b[0m")
                     sys.stdout.flush()
                     os.read(fd, 1)
             elif k in ("quit", "back"):
-                return
+                return None
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         sys.stdout.write("\x1b[2J\x1b[H")
@@ -2679,20 +2721,93 @@ def _con_run_accessible(app_url, token, app, org, role, slot, lang):
 # variable d'environnement → processus fils. Il ne touche jamais une URL, jamais
 # une ligne de commande, jamais un log.
 
+# `dbus` marque les terminaux qui ne lancent PAS la commande eux-mêmes : ils la
+# font exécuter par un serveur déjà en cours (gnome-terminal-server, ptyxis-agent,
+# kgx). Le shell fils hérite alors de l'environnement du SERVEUR, pas du nôtre —
+# et Popen renvoie 0 quand même. C'est pour eux que le jeton ne peut pas voyager
+# par une variable d'environnement. Voir _con_token_file().
 _CON_TERMINALS = [
-    ("foot", ["-e"]), ("alacritty", ["-e"]), ("kitty", []),
-    ("wezterm", ["start", "--"]), ("gnome-terminal", ["--"]),
-    ("konsole", ["-e"]), ("xfce4-terminal", ["-e"]), ("xterm", ["-e"]),
+    # nom,             préfixe d'args,        activé par D-Bus ?
+    ("foot",           ["-e"],                False),
+    ("alacritty",      ["-e"],                False),
+    ("ghostty",        ["-e"],                False),
+    ("kitty",          [],                    False),
+    ("wezterm",        ["start", "--"],       False),
+    ("ptyxis",         ["--"],                True),   # défaut GNOME/Fedora 41+
+    ("kgx",            ["-e"],                True),   # GNOME Console
+    ("gnome-terminal", ["--"],                True),
+    ("konsole",        ["-e"],                False),
+    ("xfce4-terminal", ["-x"],                False),
+    ("tilix",          ["-e"],                False),
+    ("terminator",     ["-x"],                False),
+    ("mate-terminal",  ["--"],                True),
+    ("lxterminal",     ["-e"],                False),
+    ("deepin-terminal",["-e"],                False),
+    ("urxvt",          ["-e"],                False),
+    ("st",             ["-e"],                False),
+    ("xterm",          ["-e"],                False),
+    ("x-terminal-emulator", ["-e"],           False),  # l'alternative Debian
+]
+
+# Un helper lancé par le BUREAU n'a pas le PATH de ton shell de connexion. On
+# cherche donc aussi dans les répertoires habituels : « aucun terminal trouvé »
+# alors que /usr/bin/ptyxis existe, c'est une réponse fausse, pas une absence.
+_CON_BINDIRS = [
+    "/usr/bin", "/usr/local/bin", "/bin", "/opt/bin",
+    os.path.expanduser("~/.local/bin"),
+    "/var/lib/flatpak/exports/bin",
+    os.path.expanduser("~/.local/share/flatpak/exports/bin"),
+    "/snap/bin",
 ]
 
 
-def _con_spawn_terminal(token, opts):
-    """Ouvre un terminal sur le client console, jeton passé par l'environnement."""
+def _con_find(term):
+    """Trouve un binaire même quand PATH est amputé (lancement par le bureau)."""
     import shutil
+    p = shutil.which(term)
+    if p:
+        return p
+    for d in _CON_BINDIRS:
+        c = os.path.join(d, term)
+        if os.path.isfile(c) and os.access(c, os.X_OK):
+            return c
+    return None
+
+
+def _con_token_file(token):
+    """Dépose le jeton dans un fichier que seul l'utilisateur peut lire.
+
+    Pourquoi pas une variable d'environnement, comme prévu au départ : les
+    terminaux GNOME (gnome-terminal, kgx, ptyxis) sont activés par D-Bus. Ils ne
+    lancent pas notre commande — ils la font exécuter par un serveur déjà vivant,
+    dont l'environnement n'est pas le nôtre. Le jeton n'arriverait jamais, la
+    console redemanderait le mot de passe, et Popen aurait quand même renvoyé 0 :
+    un succès qui n'en est pas un.
+
+    Le CHEMIN voyage donc dans argv — un chemin n'est pas un secret — et le jeton
+    reste dans un fichier 0600, sous $XDG_RUNTIME_DIR (tmpfs, 0700, propre à
+    l'utilisateur). Le client le lit et le supprime AUSSITÔT : la fenêtre
+    d'exposition se compte en millisecondes, et l'exposition elle-même est celle
+    de /proc/<pid>/environ — le propriétaire et root — pas celle d'argv, que tout
+    le monde peut lire.
+    """
+    import secrets
+    import tempfile
+    d = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
+    path = os.path.join(d, f"redstars-console-{secrets.token_hex(8)}.tok")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(token)
+    return path
+
+
+def _con_spawn_terminal(token, opts):
+    """Ouvre un terminal sur le client console, déjà authentifié."""
     import subprocess
 
     script = os.path.abspath(__file__)
-    argv = [sys.executable or "python3", script, "console"]
+    tokfile = _con_token_file(token)
+    argv = [sys.executable or "python3", script, "console", "--token-file", tokfile]
     for k in ("app", "role", "lang", "app-url", "api-url"):
         v = opts.get(k.replace("-", "_"))
         if v:
@@ -2710,22 +2825,33 @@ def _con_spawn_terminal(token, opts):
     cmd = " ".join(shlex.quote(a) for a in argv)
     inner = f"{cmd}; echo; read -p 'Entrée pour fermer…' _"
 
+    # On passe AUSSI le jeton par l'environnement : pour les terminaux qui ne sont
+    # pas activés par D-Bus, il arrive directement et le fichier n'est même pas lu.
+    # Ceinture et bretelles, dans cet ordre : le fichier est la ceinture.
     env = dict(os.environ)
-    env["REDSTARS_TOKEN"] = token     # le seul canal par lequel le jeton passe
+    env["REDSTARS_TOKEN"] = token
 
     terms = list(_CON_TERMINALS)
     if os.environ.get("TERMINAL"):
-        terms.insert(0, (os.environ["TERMINAL"], ["-e"]))
+        terms.insert(0, (os.environ["TERMINAL"], ["-e"], False))
 
-    for term, pre in terms:
-        if not shutil.which(term):
+    for term, pre, _dbus in terms:
+        path = _con_find(term)
+        if not path:
             continue
         try:
-            subprocess.Popen([term, *pre, "sh", "-lc", inner], env=env,
+            subprocess.Popen([path, *pre, "sh", "-lc", inner], env=env,
                              start_new_session=True)
-            return term
+            return os.path.basename(path)
         except Exception:
             continue
+
+    # Personne n'ouvrira ce fichier : on ne laisse pas traîner un jeton de session
+    # dans le runtime dir parce qu'aucun terminal n'a été trouvé.
+    try:
+        os.unlink(tokfile)
+    except OSError:
+        pass
     return None
 
 
@@ -2741,6 +2867,7 @@ def run_console(argv):
     ap.add_argument("--cols", type=int, default=0, help="0 = taille réelle du terminal")
     ap.add_argument("--rows", type=int, default=0)
     ap.add_argument("--minitel", action="store_true", help="force 40×24, comme un Minitel")
+    ap.add_argument("--token-file", help=argparse.SUPPRESS)   # écrit par /helper/console
     ap.add_argument("--accessible", action="store_true",
                     help="liste numérotée, texte pur, sans curseur — pour lecteur d'écran")
     a = ap.parse_args(argv)
@@ -2767,7 +2894,29 @@ def run_console(argv):
     #
     # Pour la même raison il n'y a volontairement PAS de `--token` : une option
     # qu'on n'expose pas est une option que personne ne mettra dans un script.
-    token = os.environ.pop("REDSTARS_TOKEN", "") or ""
+    # Deux canaux, et le fichier est le fiable. Les terminaux GNOME (gnome-terminal,
+    # kgx, ptyxis) sont activés par D-Bus : ils ne nous lancent pas, ils demandent à
+    # un serveur déjà vivant de le faire, et ce serveur n'a jamais vu notre
+    # environnement. Un jeton passé par REDSTARS_TOKEN n'y survit pas — et le
+    # terminal s'ouvre quand même, et redemande le mot de passe.
+    #
+    # Le CHEMIN du fichier voyage dans argv, ce qui est sans danger : un chemin n'est
+    # pas un secret. Le jeton, lui, est dans un fichier 0600 sous $XDG_RUNTIME_DIR
+    # qu'on supprime AVANT de faire quoi que ce soit d'autre — pas après, pas plus
+    # tard, pas dans un finally : le seul moment où l'on est sûr d'y penser.
+    token = ""
+    if a.token_file:
+        try:
+            with open(a.token_file, "r") as f:
+                token = f.read().strip()
+        except OSError:
+            token = ""
+        finally:
+            try:
+                os.unlink(a.token_file)
+            except OSError:
+                pass
+    token = token or os.environ.pop("REDSTARS_TOKEN", "") or ""
     if token:
         print("Session transmise par le navigateur — pas de mot de passe à ressaisir.\n")
     else:
@@ -2787,7 +2936,22 @@ def run_console(argv):
 
     app = a.app
     if not app:
-        app = input("App (eau, ludo…) : ").strip()
+        if a.accessible:
+            # Le MÊME document, rendu pour une autre sortie : l'accueil est déjà une
+            # liste numérotée en mode accessible. Mais cette sortie-là renvoie du TEXTE,
+            # pas du JSON — `_con_frame` ferait un json.loads dessus et planterait.
+            app = _con_home_accessible(a.app_url, token, org["oid"], a.role, a.lang)
+        else:
+            # L'ACCUEIL, dessiné par le moteur. Le client demandait « App (eau, ludo…) : »
+            # au clavier — c'est-à-dire qu'il exigeait de l'utilisateur qu'il connaisse
+            # par cœur les identifiants internes des applications. Le seul écran qu'il
+            # voyait en premier était le seul que le moteur ne rendait pas.
+            act = _con_run(a.app_url, token, None, org["oid"], a.role, None, cols, rows, a.lang)
+            if not act:
+                return
+            app = act.get("to")
+        if not app:
+            return
 
     # Le sommaire — et le recensement honnête : les slots `kind: null` sont du
     # React sur mesure, sans forme console. On les affiche barrés plutôt que de
