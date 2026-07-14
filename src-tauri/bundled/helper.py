@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.44'
+VERSION = '0.5.45'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -1141,8 +1141,26 @@ def update_self(api_base='https://api.dev.redstars.redlinks.fr'):
     except Exception as e:
         return {'updated': False, 'error': f'fetch script-latest: {e}'}
     new_version = info.get('version', '?')
-    if new_version == VERSION:
-        return {'updated': False, 'version': VERSION, 'reason': 'already up to date'}
+
+    # STRICTEMENT plus récent, pas « différent ».
+    #
+    # Le test était `if new_version == VERSION: skip` — donc toute version DIFFÉRENTE
+    # était installée, y compris une plus ANCIENNE. Tant que c'était un bouton qu'un
+    # humain pressait, on pouvait vivre avec ; branché sur une boucle automatique, un
+    # rollback côté serveur (ou un cache d'API qui traîne) rétrograde silencieusement
+    # toutes les machines du parc.
+    def _v(x):
+        try:
+            return tuple(int(p) for p in str(x).strip().split('.'))
+        except (TypeError, ValueError):
+            return ()
+    cur, new = _v(VERSION), _v(new_version)
+    if not new or not cur:
+        return {'updated': False, 'version': VERSION,
+                'error': f'version illisible: {new_version!r} / {VERSION!r}'}
+    if new <= cur:
+        return {'updated': False, 'version': VERSION,
+                'reason': 'already up to date' if new == cur else f'refus de rétrograder vers {new_version}'}
     try:
         with urllib.request.urlopen(info['script_url'], timeout=30) as r:
             script_bytes = r.read()
@@ -3157,6 +3175,43 @@ def run_console(argv):
 
 
 
+
+def _auto_update_loop(api_base, first_delay=8, period=6 * 3600):
+    """Se mettre à jour TOUT SEUL. C'est censé être la définition d'un auto-update.
+
+    `update_self()` existait déjà — mais rien ne l'appelait. Il n'était joignable que
+    par `POST /helper/update`, c'est-à-dire par un BOUTON du tableau de bord. Donc une
+    machine dont personne n'ouvrait ce panneau restait sur un helper.py vieux de
+    plusieurs versions, indéfiniment, pendant que l'API annonçait la nouvelle. Un helper
+    qui ne se met à jour que si on clique n'est pas un helper qui se met à jour.
+
+    On ne redémarre PAS le processus après coup, et c'est délibéré : le démon tient des
+    sockets (la balance, le serveur HTTP) et un execv() sous les pieds d'une requête en
+    vol est un bug plus difficile que celui qu'on répare. Le fichier est écrit ; le
+    client console, lui, est un processus NEUF à chaque lancement — il lit donc la
+    nouvelle version immédiatement. Le démon prendra la sienne au prochain démarrage.
+    """
+    def run():
+        time.sleep(first_delay)          # laisser le démon finir de s'ouvrir
+        while True:
+            try:
+                r = update_self(api_base)
+                if r.get('updated'):
+                    print(f"[auto-update] helper.py {r.get('from_version')} → {r.get('version')}",
+                          flush=True)
+                elif r.get('error'):
+                    # Hors ligne, API en vrac : ce n'est pas une erreur du helper, et
+                    # ça ne doit ni le tuer ni remplir le journal.
+                    pass
+            except Exception as e:
+                print(f"[auto-update] {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+            time.sleep(period)
+
+    t = threading.Thread(target=run, daemon=True, name='auto-update')
+    t.start()
+    return t
+
+
 def main():
     # Sous-commande console. AVANT tout : on ne démarre pas les serveurs HTTP,
     # on ne touche pas au matériel — on ouvre juste RedStars dans ce terminal.
@@ -3175,6 +3230,9 @@ def main():
     print(f'  static files from {DEMO_DIR}')
     _route_int8_if_safe()   # Android : décode codec via INT8/NPU si bit-exact
     _route_gpu_if_available()  # Desktop : codec via onnxruntime + EP GPU de l'OS (sinon CPU)
+
+    # Se tenir à jour, sans qu'on le lui demande.
+    _auto_update_loop(os.environ.get('REDSTARS_API_BASE', 'https://api.dev.redstars.redlinks.fr'))
 
     print(f'  HTTP  http://0.0.0.0:{PORT}/  +  /helper/*')
 
