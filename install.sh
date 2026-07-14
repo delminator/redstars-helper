@@ -22,7 +22,7 @@
 set -eu
 
 REPO="delminator/redstars-helper"
-API="https://api.github.com/repos/$REPO/releases/latest"
+API_BASE="https://api.github.com/repos/$REPO"
 APPIMAGE_DIR="$HOME/.local/lib/redstars-helper"
 APPIMAGE_PATH="$APPIMAGE_DIR/Redstars.Helper.AppImage"
 BIN_DIR="$HOME/.local/bin"
@@ -101,8 +101,33 @@ detect_format() {
 [ -n "$FORMAT" ] || FORMAT="$(detect_format)"
 
 # --- résolution des assets de la dernière release --------------------------
+#
+# ATTENTION : ce dépôt publie DEUX familles de releases —
+#   - l'application    → tags « vX.Y.Z »        (contient .deb/.rpm/.AppImage…)
+#   - le script helper → tags « script-py-vX.Y » (contient seulement helper.py)
+# Les releases du script sortent souvent et sont donc fréquemment « la plus
+# récente » : on ne peut PAS se fier à /releases/latest, sinon on tombe sur une
+# release sans paquet installable. On sélectionne explicitement le tag « vX.Y.Z »
+# le plus récent, puis on récupère cette release-là.
+
+# Tag de la dernière release DE L'APPLICATION (vX.Y.Z), en ignorant les
+# releases du script (script-py-v*). La liste est renvoyée du plus récent au
+# plus ancien, donc le premier tag « v… » qui matche est le bon.
+app_tag() {
+    fetch "$API_BASE/releases?per_page=50" \
+        | grep -o '"tag_name":[[:space:]]*"[^"]*"' \
+        | sed 's/.*"\([^"]*\)"$/\1/' \
+        | grep -E '^v[0-9]' | head -n1
+}
+
+# JSON de la release ciblée (récupérée par tag), mis en cache.
 release_json() {
-    [ -n "${_JSON:-}" ] || _JSON="$(fetch "$API")" || die "impossible de joindre l'API GitHub."
+    if [ -z "${_JSON:-}" ]; then
+        _TAG="${_TAG:-$(app_tag)}"
+        [ -n "$_TAG" ] || die "aucune release d'application (tag vX.Y.Z) trouvée."
+        _JSON="$(fetch "$API_BASE/releases/tags/$_TAG")" \
+            || die "impossible de joindre l'API GitHub."
+    fi
     printf '%s' "$_JSON"
 }
 
