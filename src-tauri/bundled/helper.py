@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.47'
+VERSION = '0.5.48'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -2796,6 +2796,168 @@ def _con_welcome(a):
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
+# Les libellés du login, fidèles au web (frontend auth/login/page.tsx) : la même
+# marque, les mêmes mots. Fr par défaut ; en si le terminal est lancé --lang en.
+_LOGIN_L10N = {
+    "fr": {"sub": "Plateforme de gestion multi-services",
+           "user": "Nom d'utilisateur", "pw": "Mot de passe", "ph": "votre_pseudo",
+           "envoi": "ENVOI", "submit": "se connecter",
+           "noacc": "Pas de compte ? Inscription sur le web.",
+           "hint": "↵ valider  ·  ↑↓ champ  ·  Echap annuler"},
+    "en": {"sub": "Multi-service management platform",
+           "user": "Username", "pw": "Password", "ph": "your_username",
+           "envoi": "ENTER", "submit": "sign in",
+           "noacc": "No account? Register on the web.",
+           "hint": "↵ submit  ·  ↑↓ field  ·  Esc cancel"},
+}
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def _con_login_read(fd):
+    """Une frappe → un caractère complet (UTF-8) ou une touche de contrôle.
+
+    getpass lit une LIGNE ; un formulaire a besoin de la frappe caractère par
+    caractère, pour dessiner les champs et masquer le mot de passe en direct.
+    On assemble les séquences UTF-8 multi-octets (un mot de passe peut en avoir)
+    d'après l'octet de tête, sinon un é deviendrait deux points au lieu d'un."""
+    b = os.read(fd, 1)
+    if not b:
+        return ("key", "esc")
+    o = b[0]
+    if o == 0x1b:                              # ESC seul, ou séquence CSI/SS3
+        seq = os.read(fd, 2)
+        if seq == b"OP":                       # F1 VT100/SS3
+            return ("key", "a11y")
+        if seq == b"[1":                       # F1 xterm possible : ESC [ 1 1 ~
+            return ("key", "a11y") if os.read(fd, 2) == b"1~" else ("key", "esc")
+        return ("key", {b"[A": "up", b"[B": "down"}.get(seq, "esc"))
+    if o in (0x0d, 0x0a):
+        return ("key", "enter")
+    if o == 0x09:
+        return ("key", "tab")
+    if o in (0x7f, 0x08):
+        return ("key", "back")
+    if o in (0x03, 0x04):                      # Ctrl-C / Ctrl-D
+        return ("key", "quit")
+    if o < 0x20 or 0x80 <= o < 0xc0:           # autre contrôle, ou continuation orpheline
+        return ("key", "skip")
+    if o < 0x80:
+        return ("char", chr(o))
+    n = 2 if o < 0xe0 else 3 if o < 0xf0 else 4   # tête UTF-8 → longueur totale
+    try:
+        return ("char", (b + os.read(fd, n - 1)).decode("utf-8"))
+    except UnicodeDecodeError:
+        return ("key", "skip")
+
+
+def _con_login_screen(a):
+    """L'écran de login à la marque RedStars — la réplique Vidéotex du login web.
+
+    Le login PRÉCÈDE l'authentification : il ne peut donc pas venir du moteur (la
+    trame exige déjà un jeton). Il est dessiné ici, une fois, tenant en 40 colonnes :
+    marque encadrée, deux champs, le mot de passe masqué au fur et à mesure. Le web
+    tapait le mot de passe dans un champ avec gestionnaire ; ici on rend au moins des
+    points qui avancent et un curseur, au lieu du noir muet de getpass.
+
+    Renvoie (utilisateur, mot_de_passe), ou None quand ce n'est pas un vrai terminal
+    (pipe, cron), en mode accessible, ou si l'utilisateur annule — l'appelant retombe
+    alors sur la saisie ligne à ligne, qui reste la voie sûre pour un lecteur d'écran.
+    F1 y bascule l'accessibilité, comme partout ailleurs."""
+    if a.accessible:
+        return None                            # lecteur d'écran : pas de formulaire spatial
+    fd = sys.stdin.fileno()
+    try:
+        old = termios.tcgetattr(fd)
+    except (termios.error, ValueError):
+        return None                            # pas un tty : saisie ligne à ligne
+    tr = _LOGIN_L10N.get(a.lang, _LOGIN_L10N["fr"])
+    try:
+        tcols = os.get_terminal_size().columns
+    except OSError:
+        tcols = 40
+    CW = 40 if a.minitel else max(40, min(tcols, 80))
+    IW = 32                                     # largeur intérieure du cadre
+    fw = IW - 4                                 # largeur visible d'un champ (entre crochets)
+
+    C_BRAND, C_STAR, C_DIM = "\x1b[36;1m", "\x1b[33m", "\x1b[2m"
+    C_FRAME, C_ACT, C_OK, R = "\x1b[34m", "\x1b[36m", "\x1b[32;1m", "\x1b[0m"
+
+    fields = ["", ""]                           # [utilisateur, mot de passe]
+    cur = 0
+
+    def center(s):
+        pad = max(0, (CW - len(_ANSI_RE.sub("", s))) // 2)
+        return " " * pad + s
+
+    def frame_row(plain, color=""):
+        body = (" " + plain).ljust(IW)
+        return center(f"{C_FRAME}│{R}{color}{body}{R}{C_FRAME}│{R}")
+
+    def frame_field(idx, masked, placeholder=""):
+        raw = fields[idx]
+        if not raw and idx != cur and placeholder:
+            return frame_row("[" + placeholder.ljust(fw)[:fw] + "]", C_DIM)
+        shown = ("•" * len(raw)) if masked else raw
+        if idx == cur:
+            shown += "█"                   # curseur : un bloc plein sur le champ actif
+        if len(shown) > fw:                      # champ plein : on montre la fin
+            shown = shown[len(shown) - fw:]
+        return frame_row("[" + shown.ljust(fw) + "]", C_ACT if idx == cur else C_DIM)
+
+    def screen():
+        return [
+            "",
+            center(f"{C_STAR}★{R}  {C_BRAND}R E D S T A R S{R}  {C_STAR}★{R}"),
+            center(f"{C_DIM}{tr['sub']}{R}"),
+            "",
+            center(f"{C_FRAME}┌{'─' * IW}┐{R}"),
+            frame_row(tr["user"], C_ACT if cur == 0 else C_DIM),
+            frame_field(0, False, tr["ph"]),
+            frame_row(""),
+            frame_row(tr["pw"], C_ACT if cur == 1 else C_DIM),
+            frame_field(1, True),
+            center(f"{C_FRAME}└{'─' * IW}┘{R}"),
+            "",
+            center(f"{C_OK}{tr['envoi']}{R} {C_DIM}{tr['submit']}{R}"),
+            center(f"{C_DIM}{tr['noacc']}{R}"),
+            "",
+            center(f"{C_DIM}{tr['hint']}{R}"),
+        ]
+
+    try:
+        tty.setraw(fd)
+        while True:
+            sys.stdout.write("\x1b[?25l\x1b[2J\x1b[H" + "\r\n".join(screen()) + "\r\n")
+            sys.stdout.flush()
+            kind, v = _con_login_read(fd)
+            if kind == "char":
+                fields[cur] += v
+            elif v == "back":
+                fields[cur] = fields[cur][:-1]
+            elif v in ("tab", "down"):
+                cur = 1 - cur
+            elif v == "up":
+                cur = 0
+            elif v == "a11y":                   # F1 : bascule accessibilité, comme au welcome
+                a.accessible = True
+                return None
+            elif v == "enter":
+                if cur == 0:
+                    cur = 1                      # ENVOI depuis l'identifiant → passe au mot de passe
+                elif fields[0] and fields[1]:
+                    return (fields[0], fields[1])
+                else:
+                    cur = 0 if not fields[0] else 1
+            elif v in ("esc", "quit"):
+                return None
+            # "skip" : frappe ignorée (contrôle non géré)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        sys.stdout.write("\x1b[?25h\x1b[2J\x1b[H")   # curseur rendu, écran nettoyé
+        sys.stdout.flush()
+
+
 def _con_run(app_url, token, app, org, role, slot, cols, rows, lang):
     # On suit le NUMÉRO du focusable, pas sa ligne.
     #
@@ -3137,8 +3299,18 @@ def run_console(argv):
     if token:
         pass
     else:
-        user = a.user or input("Utilisateur : ")
-        pw = a.password or getpass.getpass("Mot de passe : ")
+        # L'écran de login à la marque, dessiné ici parce qu'il précède l'auth (le
+        # moteur exige déjà un jeton). On ne le montre que si RIEN n'est pré-fourni :
+        # --user/--password sont là pour les scripts, et doivent court-circuiter la
+        # saisie interactive, pas la décorer.
+        creds = None
+        if not (a.user or a.password):
+            creds = _con_login_screen(a)
+        if creds:
+            user, pw = creds
+        else:
+            user = a.user or input("Utilisateur : ")
+            pw = a.password or getpass.getpass("Mot de passe : ")
         try:
             d = _con_req(f"{a.api_url}/api/v1/auth/login", {"username": user, "password": pw})
             token = d["access_token"]
