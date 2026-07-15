@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.48'
+VERSION = '0.5.49'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -3441,11 +3441,58 @@ def _auto_update_loop(api_base, first_delay=8, period=6 * 3600):
     return t
 
 
+def _cmd_status():
+    """`redhelper status` — les DEUX versions (le shell « client », et ce
+    helper.py), où vit ce fichier, et si le daemon local répond. Sans interface
+    graphique : c'est le status qu'un terminal peut obtenir même quand le tray
+    GUI refuse de démarrer (pas de display, lancé en root…). Le shell passe sa
+    propre version via REDHELPER_SHELL_VERSION."""
+    shell = os.environ.get('REDHELPER_SHELL_VERSION') or 'inconnue'
+    print(f'client (shell)  : {shell}')
+    print(f'helper.py       : {VERSION}')
+    try:
+        print(f'  fichier       : {os.path.realpath(__file__)}')
+    except Exception:
+        pass
+    try:
+        import urllib.request
+        with urllib.request.urlopen(f'http://127.0.0.1:{PORT}/helper/status', timeout=2) as r:
+            v = json.loads(r.read()).get('version', '?')
+        print(f'  daemon :{PORT} : en marche (helper.py {v})')
+    except Exception:
+        print(f'  daemon :{PORT} : arrêté')
+    return 0
+
+
+def _cmd_update():
+    """`redhelper update` — force MAINTENANT la mise à jour de helper.py depuis la
+    plateforme (ce que le daemon fait tout seul toutes les 6 h), vérifie la
+    signature, et l'écrit dans le cache que le shell charge en priorité."""
+    api = os.environ.get('REDSTARS_API_BASE', 'https://api.dev.redstars.redlinks.fr')
+    print(f"helper.py {VERSION} — recherche d'une version plus récente sur {api}…")
+    r = update_self(api)
+    if r.get('updated'):
+        print(f'  → mis à jour : {r.get("from_version", VERSION)} → {r.get("version")}')
+        print('  redémarre le tray/daemon pour charger la nouvelle version.')
+        return 0
+    if r.get('error'):
+        print(f'  échec : {r["error"]}', file=sys.stderr)
+        return 1
+    print(f'  déjà à jour ({r.get("version", VERSION)}).')
+    return 0
+
+
 def main():
-    # Sous-commande console. AVANT tout : on ne démarre pas les serveurs HTTP,
-    # on ne touche pas au matériel — on ouvre juste RedStars dans ce terminal.
-    if len(sys.argv) > 1 and sys.argv[1] == 'console':
+    # Sous-commandes CLI (console / status / update). AVANT tout : on ne démarre
+    # ni serveur HTTP ni matériel — ce sont des clients légers, sans interface,
+    # pour un terminal. C'est le « autre client » qui n'a pas besoin de GTK.
+    sub = sys.argv[1] if len(sys.argv) > 1 else None
+    if sub == 'console':
         return run_console(sys.argv[2:])
+    if sub == 'status':
+        return _cmd_status()
+    if sub == 'update':
+        return _cmd_update()
 
     # SO_REUSEADDR : sur Android, l'OS garde le socket 30-120 s en TIME_WAIT
     # après un crash du process. Sans REUSEADDR, le redémarrage de l'app
@@ -3453,8 +3500,27 @@ def main():
     # → startupError → MobileBlocker. Idem desktop si le user relance le
     # tray avant la fin du TIME_WAIT.
     HTTPServer.allow_reuse_address = True
-    # HTTP server on :8080 — page + helper API, same-origin path.
-    http_srv = HTTPServer(('0.0.0.0', PORT), Handler)
+    # HTTP server on :PORT — page + helper API, same-origin path.
+    #
+    # The port can still be held for a beat by the previous helper the
+    # single-instance logic just retired (its socket takes a moment to release),
+    # or by a live one. Retry with a short backoff instead of crashing every
+    # auto-update respawn with a bare `OSError: [Errno 98] Address already in
+    # use` traceback (which is exactly what shipped). If it STAYS held, a helper
+    # is already serving this port — say so and step aside cleanly, don't die.
+    http_srv = None
+    for _attempt in range(5):
+        try:
+            http_srv = HTTPServer(('0.0.0.0', PORT), Handler)
+            break
+        except OSError as e:
+            if e.errno not in (98, 48, 10048):   # not EADDRINUSE (Linux/macOS/Windows)
+                raise
+            time.sleep(0.3 * (_attempt + 1))
+    if http_srv is None:
+        print(f'redstars-helper {VERSION}: port {PORT} déjà occupé — '
+              f'un helper tourne déjà, rien à démarrer.', file=sys.stderr)
+        return
     print(f'redstars-helper {VERSION}')
     print(f'  static files from {DEMO_DIR}')
     _route_int8_if_safe()   # Android : décode codec via INT8/NPU si bit-exact
@@ -3491,4 +3557,6 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    # sys.exit propagates the CLI subcommands' return codes (status/update);
+    # the daemon path returns None → exit 0.
+    sys.exit(main())

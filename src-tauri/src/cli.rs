@@ -68,7 +68,18 @@ pub fn intercept() {
         match sub {
             Some("console") => (true, false, &args[2.min(args.len())..]),
             Some("minitel") => (true, true, &args[2.min(args.len())..]),
-            Some("upgrade") | Some("update") | Some("install") => {
+            Some("status") => {
+                // Les deux versions (shell + helper.py) sans démarrer le tray
+                // ni GTK — délégué à `helper.py status`.
+                std::process::exit(run_helper_command("status", &args[2.min(args.len())..]));
+            }
+            Some("update") => {
+                // Met à jour helper.py (le SCRIPT auto-updatable), pas l'app :
+                // c'est ce que le daemon fait tout seul toutes les 6 h, forcé ici
+                // à la demande. `redhelper upgrade` (ci-dessous) reste pour l'app.
+                std::process::exit(run_helper_command("update", &args[2.min(args.len())..]));
+            }
+            Some("upgrade") | Some("install") => {
                 std::process::exit(run_upgrade(&args[2.min(args.len())..]));
             }
             Some("help") | Some("--help") | Some("-h") => {
@@ -117,6 +128,41 @@ fn run_console_foreground(minitel: bool, passthrough: &[String]) -> i32 {
                 "[redhelper] impossible de lancer « {} {} console » : {}",
                 py,
                 script.display(),
+                e
+            );
+            eprintln!("[redhelper] python3 est-il installé et dans le PATH ?");
+            1
+        }
+    }
+}
+
+/// Lance `python3 <helper.py> <sub> [passthrough…]` en avant-plan (headless, PAS
+/// de GTK), stdio hérité, et rend son code de sortie. Sert `redhelper status` et
+/// `redhelper update` : le « autre client » qui marche sans display, là où le
+/// tray GUI échoue (Failed to initialize GTK). On passe la version du shell via
+/// REDHELPER_SHELL_VERSION pour que `status` affiche les deux versions.
+fn run_helper_command(sub: &str, passthrough: &[String]) -> i32 {
+    let script = resolve_helper_script();
+    if !script.is_file() {
+        eprintln!(
+            "[redhelper] introuvable : {} — réinstallez le helper.",
+            script.display()
+        );
+        return 1;
+    }
+    let py = pick_python();
+    let mut cmd = clean_python_command(&py);
+    cmd.arg("-u").arg(&script).arg(sub);
+    cmd.args(passthrough);
+    cmd.env("REDHELPER_SHELL_VERSION", env!("CARGO_PKG_VERSION"));
+    match cmd.status() {
+        Ok(status) => status.code().unwrap_or(0),
+        Err(e) => {
+            eprintln!(
+                "[redhelper] impossible de lancer « {} {} {} » : {}",
+                py,
+                script.display(),
+                sub,
                 e
             );
             eprintln!("[redhelper] python3 est-il installé et dans le PATH ?");
@@ -381,9 +427,14 @@ Les options sont transmises telles quelles à helper.py, par ex. :
 
 Voir « redhelper console --help » pour la liste complète des options.
 
-Mise à jour / installation :
+État & mise à jour du client :
 
-  redhelper upgrade             télécharge et installe la dernière version
+  redhelper status              versions du shell ET de helper.py, + état du daemon
+  redhelper update              met à jour helper.py (le script) depuis la plateforme
+
+Mise à jour / installation de l'application :
+
+  redhelper upgrade             télécharge et installe la dernière version de l'app
   redhelper upgrade --uninstall désinstalle
                                 (choisit AppImage / .deb / .rpm selon le système)"
     );
