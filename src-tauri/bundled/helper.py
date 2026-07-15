@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.46'
+VERSION = '0.5.47'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -2683,10 +2683,21 @@ def _con_session_load(api):
 
 def _con_read_key(fd):
     """Une touche → une intention. Les mêmes intentions que la trame annonce
-    dans ses `hints`, donc la même sémantique qu'un ENVOI/SUITE de Minitel."""
+    dans ses `hints`, donc la même sémantique qu'un ENVOI/SUITE de Minitel.
+
+    F1 est traité à part : c'est la touche qui bascule vers le mode accessibilité.
+    Deux terminaux, deux encodages — ESC O P (VT100) et ESC [ 1 1 ~ (xterm récent) —
+    et les rater ferait de F1 un « Retour », c'est-à-dire une sortie surprise."""
     c = os.read(fd, 1)
-    if c == b"\x1b":                       # séquence CSI, ou Échap seul
+    if c == b"\x1b":                       # séquence CSI/SS3, ou Échap seul
         seq = os.read(fd, 2)
+        if seq == b"OP":                   # F1, VT100/SS3
+            return "a11y"
+        if seq == b"[1":                   # peut être F1 en xterm : ESC [ 1 1 ~
+            tail = os.read(fd, 2)
+            if tail == b"1~":
+                return "a11y"
+            return "back"
         return {b"[A": "up", b"[B": "down", b"[5": "prev", b"[6": "next"}.get(seq, "back")
     return {b"\r": "enter", b"\n": "enter", b"q": "quit", b"n": "new"}.get(c, None)
 
@@ -2751,6 +2762,39 @@ def _con_home_accessible(app_url, token, org, role, lang):
 
 
 # ── La boucle ───────────────────────────────────────────────────────────────
+
+def _con_welcome(a):
+    """L'écran d'accueil, affiché une fois après le login.
+
+    C'est ici que l'accessibilité devient une OPTION qu'on active, et pas seulement un
+    argument de lancement : on appuie sur F1 pour le mode vocal (liste numérotée,
+    sémantique allégée), n'importe quelle autre touche pour le mode visuel. « Au début,
+    au login » — exactement là où on l'attend.
+
+    Renvoie True si F1 a été pressé. Ne fait rien si --accessible est déjà passé :
+    proposer d'activer ce qui l'est déjà n'a pas de sens."""
+    if a.accessible:
+        return True
+    fd = sys.stdin.fileno()
+    try:
+        old = termios.tcgetattr(fd)
+    except (termios.error, ValueError):
+        return False                     # pas un vrai terminal (pipe, cron) : mode visuel
+    try:
+        tty.setraw(fd)
+        sys.stdout.write(
+            "\x1b[2J\x1b[H"
+            "\x1b[36;1m      R E D S T A R S\x1b[0m\r\n\r\n"
+            "  \x1b[2m" + "\u2500" * 34 + "\x1b[0m\r\n\r\n"
+            "  Bienvenue.\r\n\r\n"
+            "  \x1b[33mF1\x1b[0m  mode accessibilite (voix,\r\n"
+            "      liste numerotee)\r\n\r\n"
+            "  \x1b[2mune autre touche : mode visuel\x1b[0m\r\n")
+        sys.stdout.flush()
+        return _con_read_key(fd) == "a11y"
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
 
 def _con_run(app_url, token, app, org, role, slot, cols, rows, lang):
     # On suit le NUMÉRO du focusable, pas sa ligne.
@@ -3110,6 +3154,10 @@ def run_console(argv):
     # C'était le dernier écran que le client peignait lui-même : une liste texte,
     # imprimée avant même de demander quoi que ce soit au moteur. Le premier écran
     # après le mot de passe était donc le seul que personne n'avait dessiné.
+    # F1 au login = mode accessibilite. C'est une OPTION qu'on active, pas un flag.
+    if _con_welcome(a):
+        a.accessible = True
+
     o = _con_orgs(a.api_url, token)
     if not o:
         sys.exit("Aucune organisation.")
