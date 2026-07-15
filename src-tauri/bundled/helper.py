@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.49'
+VERSION = '0.5.50'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -2731,34 +2731,49 @@ def _con_pick(items, label, render):
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
-def _con_home_accessible(app_url, token, org, role, lang):
-    """Une liste numérotée : les organisations si `org` est absent, sinon les applis.
-    Renvoie l'identifiant de ce qui a été choisi (oid ou app id) — c'est la TRAME qui
-    le dit, jamais le client."""
+def _con_home_accessible(app_url, token, role, lang):
+    """Le DASHBOARD en liste numérotée : toutes les apps de toutes les orgs, comme le
+    web. Renvoie (app_id, org_oid) de l'app choisie — l'org voyage dans l'action de
+    la tuile, jamais inventée par le client. Plus d'écran « choisir l'organisation »."""
     q = dict(role=role, lang=lang, a11y=1)
-    if org:
-        q["org"] = org
     url = f"{app_url}/api/console/frame/?" + urllib.parse.urlencode(q)
     try:
         txt = _con_req(url, headers={"Authorization": f"Bearer {token}"}, raw=True).decode()
     except urllib.error.HTTPError as e:
         print(json.loads(e.read() or b"{}").get("error", f"Erreur HTTP {e.code}"))
-        return None
+        return (None, None)
     print()
     print(txt)
 
     # Il faut aussi la trame JSON : le texte donne les numéros à un humain, mais c'est
-    # la trame qui dit à quelle APPLI chaque numéro mène. Le client n'invente jamais
-    # cette correspondance — il la lit.
-    f = _con_frame(app_url, token, org=org, role=role, lang=lang)
+    # la trame qui dit à quelle APPLI (et dans quelle ORG) chaque numéro mène. Le
+    # client n'invente jamais cette correspondance — il la lit.
+    f = _con_frame(app_url, token, role=role, lang=lang)
     foc = f.get("focusables", [])
     try:
         n = input("> ").strip()
     except (EOFError, KeyboardInterrupt):
-        return None
+        return (None, None)
     if not n.isdigit() or not (1 <= int(n) <= len(foc)):
+        return (None, None)
+    act = foc[int(n) - 1].get("action") or {}
+    return (act.get("to"), act.get("org"))
+
+
+def _con_resolve_org(app_url, token, app):
+    """Trouve l'org qui fournit `app`, pour le raccourci `--app <id>` où il n'y a pas
+    de tuile pour porter l'org. On relit le dashboard (le moteur), on n'interroge
+    aucun endpoint que le client aurait à connaître — on cherche la tuile de `app` et
+    on prend l'org de son action. Première qui l'a."""
+    try:
+        f = _con_frame(app_url, token, role="collaborator")
+    except Exception:
         return None
-    return (foc[int(n) - 1].get("action") or {}).get("to")
+    for foc in f.get("focusables", []):
+        act = foc.get("action") or {}
+        if act.get("to") == app and act.get("org"):
+            return act.get("org")
+    return None
 
 
 # ── La boucle ───────────────────────────────────────────────────────────────
@@ -3330,38 +3345,33 @@ def run_console(argv):
     if _con_welcome(a):
         a.accessible = True
 
-    o = _con_orgs(a.api_url, token)
-    if not o:
-        sys.exit("Aucune organisation.")
-    if len(o) == 1:
-        org_oid = o[0]["oid"]
-    elif a.accessible:
-        org_oid = _con_home_accessible(a.app_url, token, None, a.role, a.lang)
-    else:
-        act = _con_run(a.app_url, token, None, None, a.role, None, cols, rows, a.lang)
-        org_oid = act.get("to") if act else None
-    if not org_oid:
-        return
-    org = next((x for x in o if x["oid"] == org_oid), None) or {"oid": org_oid, "name": ""}
-
+    # PAS de choix d'organisation : le DASHBOARD, comme le web — l'union des apps de
+    # toutes les orgs de l'utilisateur. On ne choisit pas une org, on choisit une APP,
+    # et l'org qui la fournit voyage avec elle (dans l'action de la tuile). L'ancien
+    # écran « choisir l'organisation » n'existe plus : le dashboard montre déjà toutes
+    # les apps de toutes les orgs, exactement comme la version Web.
     app = a.app
+    org_oid = None
     if not app:
         if a.accessible:
-            # Le MÊME document, rendu pour une autre sortie : l'accueil est déjà une
-            # liste numérotée en mode accessible. Mais cette sortie-là renvoie du TEXTE,
-            # pas du JSON — `_con_frame` ferait un json.loads dessus et planterait.
-            app = _con_home_accessible(a.app_url, token, org["oid"], a.role, a.lang)
+            # Même document, autre sortie : le dashboard est déjà une liste numérotée
+            # en accessible — mais ça renvoie du TEXTE, pas du JSON, donc un chemin à part.
+            app, org_oid = _con_home_accessible(a.app_url, token, a.role, a.lang)
         else:
-            # L'ACCUEIL, dessiné par le moteur. Le client demandait « App (eau, ludo…) : »
-            # au clavier — c'est-à-dire qu'il exigeait de l'utilisateur qu'il connaisse
-            # par cœur les identifiants internes des applications. Le seul écran qu'il
-            # voyait en premier était le seul que le moteur ne rendait pas.
-            act = _con_run(a.app_url, token, None, org["oid"], a.role, None, cols, rows, a.lang)
+            act = _con_run(a.app_url, token, None, None, a.role, None, cols, rows, a.lang)
             if not act:
                 return
             app = act.get("to")
+            org_oid = act.get("org")
         if not app:
             return
+    if not org_oid:
+        # --app fourni en ligne de commande : pas de tuile pour porter l'org, on la
+        # résout via le dashboard (la première org qui fournit cette app).
+        org_oid = _con_resolve_org(a.app_url, token, app)
+        if not org_oid:
+            sys.exit("Organisation introuvable pour cette application.")
+    org = {"oid": org_oid, "name": ""}
 
     # Le sommaire — et le recensement honnête : les slots `kind: null` sont du
     # React sur mesure, sans forme console. On les affiche barrés plutôt que de
