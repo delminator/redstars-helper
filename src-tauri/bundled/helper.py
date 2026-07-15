@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.45'
+VERSION = '0.5.46'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -2574,6 +2574,15 @@ def _con_frame(app_url, token, **q):
     # comme la chaîne "None" — et le moteur cherche consciencieusement une application
     # qui s'appelle None. Omettre `app`, c'est demander l'ACCUEIL.
     q = {k: v for k, v in q.items() if v is not None}
+
+    # Le fuseau, en minutes à l'est de UTC. Le moteur tourne côté serveur, en UTC ; un
+    # terminal n'a pas de fuseau navigateur à lui offrir. Sans ça, l'agenda affiche un
+    # événement de 15h30 à 13h30 — pas une heure arrondie, une heure FAUSSE. Le client,
+    # lui, tourne sur la machine de l'utilisateur : il connaît son décalage, il l'envoie.
+    if "tz" not in q:
+        off = time.localtime().tm_gmtoff        # secondes à l'est de UTC (None si inconnu)
+        if off is not None:
+            q["tz"] = off // 60
     url = f"{app_url}/api/console/frame/?" + urllib.parse.urlencode(q)
     try:
         return _con_req(url, headers={"Authorization": f"Bearer {token}"})
