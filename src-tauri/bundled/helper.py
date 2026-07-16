@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.58'
+VERSION = '0.5.59'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -2569,6 +2569,20 @@ def _con_orgs(api, token):
 
 # ── Le moteur : on ne fait que DEMANDER une trame ───────────────────────────
 
+# Profondeur de couleur négociée avec le terminal. Les images d'icônes portent
+# désormais leur RGB EXACT : un terminal truecolor l'affiche tel quel — identique au
+# Web, sans le banding de la palette 256. On ne DEMANDE truecolor que si le terminal
+# l'annonce (COLORTERM), sinon 256 couleurs, la valeur sûre partout. Le Minitel (vraie
+# console Linux + setfont) reste en 256 : le noyau ne rend pas le truecolor de toute façon.
+_CON_COLOR = "ansi256"
+
+def _con_color_depth(minitel):
+    if minitel:
+        return "ansi256"
+    if os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit"):
+        return "truecolor"
+    return "ansi256"
+
 def _con_frame(app_url, token, **q):
     # On n'envoie pas ce qu'on n'a pas. Sans ce filtre, `app=None` part sur le réseau
     # comme la chaîne "None" — et le moteur cherche consciencieusement une application
@@ -2583,6 +2597,10 @@ def _con_frame(app_url, token, **q):
         off = time.localtime().tm_gmtoff        # secondes à l'est de UTC (None si inconnu)
         if off is not None:
             q["tz"] = off // 60
+    # La profondeur de couleur voyage avec la trame : le moteur émet le RGB exact des
+    # images quand on demande truecolor (rendu Web), la palette 256 sinon.
+    if "color" not in q:
+        q["color"] = _CON_COLOR
     url = f"{app_url}/api/console/frame/?" + urllib.parse.urlencode(q)
     try:
         return _con_req(url, headers={"Authorization": f"Bearer {token}"})
@@ -3472,6 +3490,11 @@ def run_console(argv):
 
     tc, tr = term_size()
     cols, rows = (40, 24) if a.minitel else (a.cols or tc, a.rows or tr)
+
+    # Négocier la profondeur de couleur une fois, ici : truecolor sur un émulateur qui
+    # l'annonce (icônes au rendu Web), 256 couleurs partout ailleurs et en Minitel.
+    global _CON_COLOR
+    _CON_COLOR = _con_color_depth(a.minitel)
 
     # Mode Minitel : donner à la FENÊTRE la forme d'un Minitel, 40×24, et remplir
     # l'écran de gros caractères.
