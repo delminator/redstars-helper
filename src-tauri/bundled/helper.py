@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.54'
+VERSION = '0.5.55'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -2712,10 +2712,22 @@ def _con_pick(items, label, render):
     try:
         tty.setraw(fd)
         while True:
-            sys.stdout.write("\x1b[2J\x1b[H\x1b[1;36m" + label + "\x1b[0m\r\n\r\n")
+            # Largeur réelle : sur un Minitel (40 col) une ligne figée à 50 débordait et
+            # partait à la ligne. On coupe au gabarit, et la barre de sélection couvre la
+            # rangée entière (padding sur la ligne active seulement).
+            try:
+                w = os.get_terminal_size().columns
+            except OSError:
+                w = 80
+            inner = max(4, w - 3)
+            sys.stdout.write("\x1b[2J\x1b[H\x1b[1;36m" + label[:w] + "\x1b[0m\r\n\r\n")
             for k, it in enumerate(items):
-                mark = "\x1b[7m" if k == i else ""
-                sys.stdout.write(f"  {mark}{render(it):<50}\x1b[0m\r\n")
+                sel = k == i
+                line = render(it)[:inner]
+                if sel:
+                    line = line.ljust(inner)
+                mark = "\x1b[7m" if sel else ""
+                sys.stdout.write(f"  {mark}{line}\x1b[0m\r\n")
             sys.stdout.write("\r\n\x1b[2m↑ ↓ choisir · ↵ valider · Échap retour · q quitter\x1b[0m\r\n")
             sys.stdout.flush()
             k = _con_read_key(fd)
@@ -3537,46 +3549,55 @@ def run_console(argv):
         s = _con_frame(a.app_url, token, app=app, org=org["oid"], role=a.role)
         if "error" in s:
             sys.exit(s["error"])
-        slots = s["slots"]
+
+        # Le MENU de l'app — CELUI DU WEB : les mêmes libellés localisés, icônes, ordre et
+        # groupe de pied (`views[role].menu`). Avant, la console listait les IDS de slots
+        # bruts ; maintenant elle affiche le vrai menu, identique à la version Web, sans une
+        # ligne de code par app. On retombe sur les slots si une vieille trame n'a pas `menu`.
+        menu = s.get("menu") or [
+            {"id": x["id"], "label": {"fr": x["id"], "en": x["id"]}, "kind": x.get("kind")}
+            for x in s.get("slots", [])
+        ]
+        # Les entrées « align: bottom » (Réglages, etc.) filent en pied, comme sur le web.
+        menu = [m for m in menu if m.get("align") != "bottom"] + \
+               [m for m in menu if m.get("align") == "bottom"]
+
+        def _menu_text(m):
+            lab = m.get("label") or {}
+            txt = lab.get(a.lang) or lab.get("fr") or m.get("id", "?")
+            ico = (m.get("icon") or "").strip()
+            return f"{ico} {txt}".strip() if ico else txt
 
         if a.accessible:
-            # Le sommaire aussi est une liste numérotée. Les slots que la console ne
-            # sait PAS rendre (du React sur mesure : la carto d'eau, ses graphes) sont
-            # annoncés comme tels au lieu d'être cachés — une dette qu'on dit tout
-            # haut plutôt qu'un silence qui laisse croire que tout est là.
-            rendable = [x for x in slots if x["kind"]]
-            print(f"\n{app} version {s['version']}. Organisation {org['name']}.")
-            print(f"{len(rendable)} rubriques.\n")
-            for i, x in enumerate(rendable, 1):
-                print(f"{i}. {x['id']}")
-            muets = [x['id'] for x in slots if not x['kind']]
-            if muets:
-                print(f"\nNon disponibles en console : {', '.join(muets)}.")
-            print(f"\nTapez un numéro de 1 à {len(rendable)} puis Entrée. 0 pour quitter.")
+            # Le menu en liste numérotée. On ouvre N'IMPORTE quelle rubrique : le moteur
+            # transcrit celles qui sont du React sur mesure, plus besoin de les cacher.
+            print(f"\n{app} — {org['name']}.")
+            print(f"{len(menu)} rubriques.\n")
+            for i, m in enumerate(menu, 1):
+                print(f"{i}. {_menu_text(m)}")
+            print(f"\nTapez un numéro de 1 à {len(menu)} puis Entrée. 0 pour quitter.")
             try:
                 n = input("> ").strip()
             except (EOFError, KeyboardInterrupt):
                 return
-            if not n.isdigit() or not (1 <= int(n) <= len(rendable)):
+            if not n.isdigit() or not (1 <= int(n) <= len(menu)):
                 return
-            _con_run_accessible(a.app_url, token, app, org["oid"], a.role, rendable[int(n)-1]["id"], a.lang)
+            _con_run_accessible(a.app_url, token, app, org["oid"], a.role, menu[int(n)-1]["id"], a.lang)
             return
 
-        # Sommaire ↔ slot, en boucle : Retour depuis un slot revient au SOMMAIRE ;
-        # Retour depuis le sommaire casse cette boucle et remonte au dashboard.
+        # Menu ↔ rubrique, en boucle : Retour depuis une rubrique revient au MENU ;
+        # Retour depuis le menu casse cette boucle et remonte au dashboard.
         while True:
-            choice = _con_pick(slots, f"{app} v{s['version']} — {org['name']}",
-                          lambda x: f"{x['id']:<16} {x['kind'] or '(React sur mesure — pas de rendu console)'}")
+            choice = _con_pick(menu, f"{app} — {org['name']}", _menu_text)
             if choice == "quit":
-                return                   # Quitter (q) au sommaire = sortie franche
+                return                   # Quitter (q) au menu = sortie franche
             if not choice:
-                break                    # Retour (Échap) au sommaire → remonter au dashboard
-            if not choice["kind"]:
-                continue                 # slot sans forme console → re-montrer le sommaire
+                break                    # Retour (Échap) au menu → remonter au dashboard
+            # On ouvre toute rubrique — le moteur rend le slot, ou transcrit le React.
             r = _con_run(a.app_url, token, app, org["oid"], a.role, choice["id"], cols, rows, a.lang, center)
             if r == "quit":
                 return                   # Quitter (q) = sortie franche, depuis n'importe où
-            # "back" / route consommée / None → on re-montre le sommaire (la boucle)
+            # "back" / route consommée / None → on re-montre le menu (la boucle)
 
         # Sorti du sommaire par Retour : si l'app était épinglée (--app), rien au-dessus
         # → sortie ; sinon la boucle externe redessine le dashboard.
