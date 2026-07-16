@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.57'
+VERSION = '0.5.58'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -3647,10 +3647,16 @@ def run_console(argv):
             _con_run_accessible(a.app_url, token, app, org["oid"], a.role, menu[int(n)-1]["id"], a.lang)
             return
 
+        # Titre du menu : la trame peut en donner un joli (« Organisations » plutôt que
+        # l'id brut) ; sinon on prend l'id de l'app. Le suffixe org ne s'ajoute que s'il
+        # y a une org nommée (le pseudo-écran des orgs n'en a pas).
+        menu_title = s.get("title") or app
+        hdr = f"{menu_title} — {org['name']}" if org.get("name") else menu_title
+
         # Menu ↔ rubrique, en boucle : Retour depuis une rubrique revient au MENU ;
         # Retour depuis le menu casse cette boucle et remonte au dashboard.
         while True:
-            choice = _con_pick(menu, f"{app} — {org['name']}", _menu_text)
+            choice = _con_pick(menu, hdr, _menu_text)
             if choice == "quit":
                 return                   # Quitter (q) au menu = sortie franche
             if not choice:
