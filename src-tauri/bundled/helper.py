@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.53'
+VERSION = '0.5.54'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -2716,7 +2716,7 @@ def _con_pick(items, label, render):
             for k, it in enumerate(items):
                 mark = "\x1b[7m" if k == i else ""
                 sys.stdout.write(f"  {mark}{render(it):<50}\x1b[0m\r\n")
-            sys.stdout.write("\r\n\x1b[2m↑ ↓ pour choisir · ↵ valider · q quitter\x1b[0m\r\n")
+            sys.stdout.write("\r\n\x1b[2m↑ ↓ choisir · ↵ valider · Échap retour · q quitter\x1b[0m\r\n")
             sys.stdout.flush()
             k = _con_read_key(fd)
             if k == "up":
@@ -2725,8 +2725,10 @@ def _con_pick(items, label, render):
                 i = (i + 1) % len(items)
             elif k == "enter":
                 return items[i]
-            elif k in ("quit", "back"):
-                return None
+            elif k == "quit":
+                return "quit"       # sortie franche, distincte du Retour
+            elif k == "back":
+                return None         # Retour : l'appelant remonte d'un cran
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
@@ -2810,7 +2812,9 @@ def _con_choose_org(a, token, app, cols, rows, center=False):
         act = _con_pick_frame_accessible(a.app_url, token, a.role, a.lang, app=app)
     else:
         act = _con_run(a.app_url, token, app, None, a.role, None, cols, rows, a.lang, center)
-    return (act or {}).get("org")
+    # `_con_run` peut renvoyer "back"/"quit" (des chaînes) si l'utilisateur ressort du
+    # choix d'org : ce n'est pas une org, c'est une annulation.
+    return act.get("org") if isinstance(act, dict) else None
 
 
 # ── La boucle ───────────────────────────────────────────────────────────────
@@ -3036,7 +3040,7 @@ def _con_run(app_url, token, app, org, role, slot, cols, rows, lang, center=Fals
                 sys.stdout.write("\x1b[2mUne touche pour revenir…\x1b[0m")
                 sys.stdout.flush()
                 os.read(fd, 1)
-                return
+                return "back"
 
             # Le serveur a déjà tout composé. On imprime — centré en mode Minitel, où le
             # cadre 40×24 flotte dans une console plus large que lui.
@@ -3072,8 +3076,12 @@ def _con_run(app_url, token, app, org, role, slot, cols, rows, lang, center=Fals
                     sys.stdout.write("\x1b[2m(le rendu des modales n'est pas encore écrit — une touche)\x1b[0m")
                     sys.stdout.flush()
                     os.read(fd, 1)
-            elif k in ("quit", "back"):
-                return None
+            elif k == "back":
+                # Retour = remonter d'UN cran (slot → sommaire), pas quitter. C'est
+                # l'appelant qui décide où mène ce cran ; ici on dit seulement « en haut ».
+                return "back"
+            elif k == "quit":
+                return "quit"
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         sys.stdout.write("\x1b[2J\x1b[H")
@@ -3488,67 +3496,92 @@ def run_console(argv):
     # et l'org qui la fournit voyage avec elle (dans l'action de la tuile). L'ancien
     # écran « choisir l'organisation » n'existe plus : le dashboard montre déjà toutes
     # les apps de toutes les orgs, exactement comme la version Web.
-    app = a.app
-    org_oid = None
-    if not app:
-        if a.accessible:
-            # Même document, autre sortie : le dashboard est déjà une liste numérotée
-            # en accessible — mais ça renvoie du TEXTE, pas du JSON, donc un chemin à part.
-            app, org_oid = _con_home_accessible(a.app_url, token, a.role, a.lang)
-        else:
-            act = _con_run(a.app_url, token, None, None, a.role, None, cols, rows, a.lang, center)
-            if not act:
-                return
-            app = act.get("to")
-            org_oid = act.get("org")
+    # Boucle de navigation : dashboard → app → sommaire → slot. « Retour » remonte d'UN
+    # SEUL cran (slot → sommaire → dashboard → sortie) au lieu de tout quitter d'un coup.
+    # C'est la remontée d'un Minitel (Sommaire/Retour) et du bouton Retour du web ; avant,
+    # le flux était linéaire et le moindre Retour déroulait tout jusqu'à la sortie.
+    pinned = bool(a.app)      # --app <id> : rien au-dessus de l'app, donc Retour = sortie
+    while True:
+        app = a.app
+        org_oid = None
         if not app:
-            return
-    if not org_oid:
-        # L'org, SI BESOIN — après le clic, comme le web. Une tuile mono-org l'a déjà
-        # portée ; sinon (app multi-org, ou raccourci --app) le moteur tranche : il
-        # l'adopte s'il n'y a qu'une org, ou pose la question s'il y en a plusieurs.
-        org_oid = _con_choose_org(a, token, app, cols, rows, center)
+            if a.accessible:
+                # Même document, autre sortie : le dashboard est déjà une liste numérotée
+                # en accessible — mais ça renvoie du TEXTE, pas du JSON, donc un chemin à part.
+                app, org_oid = _con_home_accessible(a.app_url, token, a.role, a.lang)
+            else:
+                act = _con_run(a.app_url, token, None, None, a.role, None, cols, rows, a.lang, center)
+                # Au dashboard (le sommet), Retour comme Quitter = sortie : rien au-dessus.
+                if not isinstance(act, dict):
+                    return
+                app = act.get("to")
+                org_oid = act.get("org")
+            if not app:
+                return
         if not org_oid:
+            # L'org, SI BESOIN — après le clic, comme le web. Une tuile mono-org l'a déjà
+            # portée ; sinon (app multi-org, ou raccourci --app) le moteur tranche : il
+            # l'adopte s'il n'y a qu'une org, ou pose la question s'il y en a plusieurs.
+            org_oid = _con_choose_org(a, token, app, cols, rows, center)
+            if not org_oid:
+                # Choix d'org annulé (Retour) : on remonte au dashboard — ou on sort si
+                # l'app était épinglée en ligne de commande (rien au-dessus).
+                if pinned:
+                    return
+                continue
+        org = {"oid": org_oid, "name": ""}
+
+        # Le sommaire — et le recensement honnête : les slots `kind: null` sont du
+        # React sur mesure, sans forme console. On les affiche barrés plutôt que de
+        # les cacher : c'est une dette visible, pas un secret.
+        s = _con_frame(a.app_url, token, app=app, org=org["oid"], role=a.role)
+        if "error" in s:
+            sys.exit(s["error"])
+        slots = s["slots"]
+
+        if a.accessible:
+            # Le sommaire aussi est une liste numérotée. Les slots que la console ne
+            # sait PAS rendre (du React sur mesure : la carto d'eau, ses graphes) sont
+            # annoncés comme tels au lieu d'être cachés — une dette qu'on dit tout
+            # haut plutôt qu'un silence qui laisse croire que tout est là.
+            rendable = [x for x in slots if x["kind"]]
+            print(f"\n{app} version {s['version']}. Organisation {org['name']}.")
+            print(f"{len(rendable)} rubriques.\n")
+            for i, x in enumerate(rendable, 1):
+                print(f"{i}. {x['id']}")
+            muets = [x['id'] for x in slots if not x['kind']]
+            if muets:
+                print(f"\nNon disponibles en console : {', '.join(muets)}.")
+            print(f"\nTapez un numéro de 1 à {len(rendable)} puis Entrée. 0 pour quitter.")
+            try:
+                n = input("> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                return
+            if not n.isdigit() or not (1 <= int(n) <= len(rendable)):
+                return
+            _con_run_accessible(a.app_url, token, app, org["oid"], a.role, rendable[int(n)-1]["id"], a.lang)
             return
-    org = {"oid": org_oid, "name": ""}
 
-    # Le sommaire — et le recensement honnête : les slots `kind: null` sont du
-    # React sur mesure, sans forme console. On les affiche barrés plutôt que de
-    # les cacher : c'est une dette visible, pas un secret.
-    s = _con_frame(a.app_url, token, app=app, org=org["oid"], role=a.role)
-    if "error" in s:
-        sys.exit(s["error"])
-    slots = s["slots"]
+        # Sommaire ↔ slot, en boucle : Retour depuis un slot revient au SOMMAIRE ;
+        # Retour depuis le sommaire casse cette boucle et remonte au dashboard.
+        while True:
+            choice = _con_pick(slots, f"{app} v{s['version']} — {org['name']}",
+                          lambda x: f"{x['id']:<16} {x['kind'] or '(React sur mesure — pas de rendu console)'}")
+            if choice == "quit":
+                return                   # Quitter (q) au sommaire = sortie franche
+            if not choice:
+                break                    # Retour (Échap) au sommaire → remonter au dashboard
+            if not choice["kind"]:
+                continue                 # slot sans forme console → re-montrer le sommaire
+            r = _con_run(a.app_url, token, app, org["oid"], a.role, choice["id"], cols, rows, a.lang, center)
+            if r == "quit":
+                return                   # Quitter (q) = sortie franche, depuis n'importe où
+            # "back" / route consommée / None → on re-montre le sommaire (la boucle)
 
-    if a.accessible:
-        # Le sommaire aussi est une liste numérotée. Les slots que la console ne
-        # sait PAS rendre (du React sur mesure : la carto d'eau, ses graphes) sont
-        # annoncés comme tels au lieu d'être cachés — une dette qu'on dit tout
-        # haut plutôt qu'un silence qui laisse croire que tout est là.
-        rendable = [x for x in slots if x["kind"]]
-        print(f"\n{app} version {s['version']}. Organisation {org['name']}.")
-        print(f"{len(rendable)} rubriques.\n")
-        for i, x in enumerate(rendable, 1):
-            print(f"{i}. {x['id']}")
-        muets = [x['id'] for x in slots if not x['kind']]
-        if muets:
-            print(f"\nNon disponibles en console : {', '.join(muets)}.")
-        print(f"\nTapez un numéro de 1 à {len(rendable)} puis Entrée. 0 pour quitter.")
-        try:
-            n = input("> ").strip()
-        except (EOFError, KeyboardInterrupt):
+        # Sorti du sommaire par Retour : si l'app était épinglée (--app), rien au-dessus
+        # → sortie ; sinon la boucle externe redessine le dashboard.
+        if pinned:
             return
-        if not n.isdigit() or not (1 <= int(n) <= len(rendable)):
-            return
-        _con_run_accessible(a.app_url, token, app, org["oid"], a.role, rendable[int(n)-1]["id"], a.lang)
-        return
-
-    choice = _con_pick(slots, f"{app} v{s['version']} — {org['name']}",
-                  lambda x: f"{x['id']:<16} {x['kind'] or '(React sur mesure — pas de rendu console)'}")
-    if not choice or not choice["kind"]:
-        return
-
-    _con_run(a.app_url, token, app, org["oid"], a.role, choice["id"], cols, rows, a.lang, center)
 
 
 
