@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.50'
+VERSION = '0.5.51'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -3269,6 +3269,20 @@ def run_console(argv):
 
     tc, tr = term_size()
     cols, rows = (40, 24) if a.minitel else (a.cols or tc, a.rows or tr)
+
+    # Mode Minitel : donner à la FENÊTRE la forme d'un Minitel, 40×24. La séquence
+    # DECSLPP/XTWINOPS `ESC [ 8 ; rows ; cols t` demande au terminal de se
+    # redimensionner ; xterm/kitty/gnome-terminal l'honorent, les autres l'ignorent
+    # (inoffensif). On restaure la taille d'origine à la sortie — y compris sur
+    # sys.exit — via atexit, pour ne pas laisser la fenêtre de l'utilisateur rétrécie.
+    # (Ça change la forme, pas la POLICE : agrandir les caractères est le rôle de
+    # l'émulateur, pas d'un programme dans le terminal.)
+    if a.minitel and sys.stdout.isatty():
+        sys.stdout.write("\x1b[8;24;40t")
+        sys.stdout.flush()
+        import atexit
+        atexit.register(lambda oc=tc, orr=tr: (sys.stdout.write(f"\x1b[8;{orr};{oc}t"),
+                                               sys.stdout.flush()))
 
     # Le navigateur a DÉJÀ authentifié l'utilisateur : il nous passe le jeton de
     # session, et on saute la saisie du mot de passe. Le jeton arrive par
