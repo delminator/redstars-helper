@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.52'
+VERSION = '0.5.53'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -2787,7 +2787,7 @@ def _con_resolve_org(app_url, token, app):
     return None
 
 
-def _con_choose_org(a, token, app, cols, rows):
+def _con_choose_org(a, token, app, cols, rows, center=False):
     """L'org de l'app, résolue APRÈS le clic — comme le web, et seulement si besoin.
 
     On demande au moteur la trame de l'app SANS org, et il décide :
@@ -2809,7 +2809,7 @@ def _con_choose_org(a, token, app, cols, rows):
     if a.accessible:
         act = _con_pick_frame_accessible(a.app_url, token, a.role, a.lang, app=app)
     else:
-        act = _con_run(a.app_url, token, app, None, a.role, None, cols, rows, a.lang)
+        act = _con_run(a.app_url, token, app, None, a.role, None, cols, rows, a.lang, center)
     return (act or {}).get("org")
 
 
@@ -3010,7 +3010,7 @@ def _con_login_screen(a):
         sys.stdout.flush()
 
 
-def _con_run(app_url, token, app, org, role, slot, cols, rows, lang):
+def _con_run(app_url, token, app, org, role, slot, cols, rows, lang, center=False):
     # On suit le NUMÉRO du focusable, pas sa ligne.
     #
     # Une ligne pouvait porter une seule chose à sélectionner — jusqu'à l'accueil, où
@@ -3038,8 +3038,10 @@ def _con_run(app_url, token, app, org, role, slot, cols, rows, lang):
                 os.read(fd, 1)
                 return
 
-            # Le serveur a déjà tout composé. On imprime.
-            sys.stdout.write(f["ansi"].replace("\n", "\r\n"))
+            # Le serveur a déjà tout composé. On imprime — centré en mode Minitel, où le
+            # cadre 40×24 flotte dans une console plus large que lui.
+            sys.stdout.write(_con_center(f["ansi"], cols, rows) if center
+                             else f["ansi"].replace("\n", "\r\n"))
             sys.stdout.flush()
 
             k = _con_read_key(fd)
@@ -3276,6 +3278,81 @@ def _con_spawn_terminal(token, opts):
     return None
 
 
+def _con_bigfont_setup():
+    """Sur une VRAIE console Linux (TERM=linux), agrandit la police pour un rendu
+    proche du Minitel — de gros caractères qui remplissent l'écran. Sauve la police
+    courante et renvoie une fonction de restauration (à appeler en sortie), ou None si
+    on n'est pas sur une console texte, si `setfont` manque, ou si aucune grosse police
+    n'a pris.
+
+    Pourquoi setfont, et pas une séquence d'échappement : la console Linux n'a AUCUNE
+    commande in-band pour la police. Elle ignore aussi le double-hauteur VT100
+    (`ESC # 3/4`) et le resize XTWINOPS (`ESC [ 8 t`) — donc les astuces des émulateurs
+    ne servent à rien ici. La taille des glyphes s'y change avec `setfont`, point.
+
+    On agrandit surtout la HAUTEUR (police 32 px de haut) : le nombre de colonnes vaut
+    largeur_écran ÷ largeur_police, or les polices console plafonnent à ~16 px de large
+    — viser 40 colonnes pile demanderait en plus une résolution basse (root/boot). Une
+    police 16×32 donne déjà ~24 lignes plein écran, la bonne proportion, et le cadre est
+    centré dans les colonnes restantes (voir _con_center)."""
+    import shutil
+    import subprocess
+    import tempfile
+    if os.environ.get("TERM") != "linux" or not sys.stdout.isatty():
+        return None
+    if not shutil.which("setfont"):
+        return None
+    old = os.path.join(tempfile.gettempdir(), f"redstars-oldfont-{os.getpid()}.psf")
+    # De la plus grande à la plus petite, en couvrant les noms usuels selon la distrib
+    # (kbd, console-setup, terminus). `-o old` sauve la police courante AVANT de charger
+    # la nouvelle : dès qu'un chargement réussit, `old` contient bien la police d'origine
+    # (les essais ratés n'ont rien changé). On garde la première que setfont accepte.
+    for font in ("ter-v32b", "latarcyrheb-sun32", "Uni3-TerminusBold32x16",
+                 "Lat15-Terminus32x16", "Lat2-Terminus32x16", "Uni2-Terminus32x16",
+                 "sun12x22", "ter-v24b", "ter-v22b"):
+        try:
+            r = subprocess.run(["setfont", "-o", old, font],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            return None
+        if r.returncode == 0:
+            def restore(_old=old):
+                try:
+                    subprocess.run(["setfont", _old],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+                try:
+                    os.unlink(_old)
+                except OSError:
+                    pass
+            return restore
+    return None
+
+
+def _con_center(ansi, cols, rows):
+    """Centre le cadre du serveur dans le terminal réel — pour le mode Minitel, où le
+    contenu fait 40×24 mais la console (surtout après un gros setfont) reste plus large.
+
+    La trame ANSI est orientée LIGNES : un effacement + « home » en tête, puis des lignes
+    jointes par CRLF, sans positionnement absolu par ligne. On retire l'effacement/home,
+    on découpe, et on ré-émet chaque ligne à une position absolue (row, col) pour poser
+    le bloc 40×24 au centre. La taille réelle est relue À CHAQUE trame : setfont a pu
+    changer la géométrie de la console entre-temps."""
+    try:
+        sz = os.get_terminal_size()
+        rc, rr = sz.columns, sz.lines
+    except OSError:
+        rc, rr = cols, rows
+    left = max(0, (rc - cols) // 2)
+    top = max(0, (rr - rows) // 2)
+    body = ansi.replace("\x1b[2J", "").replace("\x1b[H", "")
+    out = ["\x1b[2J"]
+    for i, ln in enumerate(body.split("\n")):
+        out.append(f"\x1b[{top + i + 1};{left + 1}H" + ln.rstrip("\r"))
+    return "".join(out)
+
+
 def run_console(argv):
     ap = argparse.ArgumentParser(prog="helper.py console", description="RedStars en console")
     ap.add_argument("--app-url", default=os.environ.get("REDSTARS_APP_URL", DEFAULT_APP_URL))
@@ -3307,19 +3384,29 @@ def run_console(argv):
     tc, tr = term_size()
     cols, rows = (40, 24) if a.minitel else (a.cols or tc, a.rows or tr)
 
-    # Mode Minitel : donner à la FENÊTRE la forme d'un Minitel, 40×24. La séquence
-    # DECSLPP/XTWINOPS `ESC [ 8 ; rows ; cols t` demande au terminal de se
-    # redimensionner ; xterm/kitty/gnome-terminal l'honorent, les autres l'ignorent
-    # (inoffensif). On restaure la taille d'origine à la sortie — y compris sur
-    # sys.exit — via atexit, pour ne pas laisser la fenêtre de l'utilisateur rétrécie.
-    # (Ça change la forme, pas la POLICE : agrandir les caractères est le rôle de
-    # l'émulateur, pas d'un programme dans le terminal.)
+    # Mode Minitel : donner à la FENÊTRE la forme d'un Minitel, 40×24, et remplir
+    # l'écran de gros caractères.
+    #
+    # Deux mondes, deux leviers :
+    #   • Un ÉMULATEUR (xterm, kitty, gnome-terminal…) honore le resize DECSLPP/XTWINOPS
+    #     `ESC [ 8 ; rows ; cols t` — la fenêtre prend la forme 40×24. Les autres
+    #     l'ignorent (inoffensif). La police, elle, reste l'affaire de l'émulateur.
+    #   • Une VRAIE console Linux ignore CE resize (et le double-hauteur VT100) : là, on
+    #     agrandit la POLICE avec setfont, ce qu'un programme PEUT faire sur la console,
+    #     puis on centre le cadre 40×24 dans les colonnes restantes.
+    # On restaure taille et police d'origine à la sortie — y compris sur sys.exit — via
+    # atexit, pour ne pas laisser la fenêtre rétrécie ni la console en 32 px.
+    center = False
     if a.minitel and sys.stdout.isatty():
         sys.stdout.write("\x1b[8;24;40t")
         sys.stdout.flush()
         import atexit
         atexit.register(lambda oc=tc, orr=tr: (sys.stdout.write(f"\x1b[8;{orr};{oc}t"),
                                                sys.stdout.flush()))
+        restore_font = _con_bigfont_setup()
+        if restore_font:
+            atexit.register(restore_font)
+        center = True
 
     # Le navigateur a DÉJÀ authentifié l'utilisateur : il nous passe le jeton de
     # session, et on saute la saisie du mot de passe. Le jeton arrive par
@@ -3409,7 +3496,7 @@ def run_console(argv):
             # en accessible — mais ça renvoie du TEXTE, pas du JSON, donc un chemin à part.
             app, org_oid = _con_home_accessible(a.app_url, token, a.role, a.lang)
         else:
-            act = _con_run(a.app_url, token, None, None, a.role, None, cols, rows, a.lang)
+            act = _con_run(a.app_url, token, None, None, a.role, None, cols, rows, a.lang, center)
             if not act:
                 return
             app = act.get("to")
@@ -3420,7 +3507,7 @@ def run_console(argv):
         # L'org, SI BESOIN — après le clic, comme le web. Une tuile mono-org l'a déjà
         # portée ; sinon (app multi-org, ou raccourci --app) le moteur tranche : il
         # l'adopte s'il n'y a qu'une org, ou pose la question s'il y en a plusieurs.
-        org_oid = _con_choose_org(a, token, app, cols, rows)
+        org_oid = _con_choose_org(a, token, app, cols, rows, center)
         if not org_oid:
             return
     org = {"oid": org_oid, "name": ""}
@@ -3461,7 +3548,7 @@ def run_console(argv):
     if not choice or not choice["kind"]:
         return
 
-    _con_run(a.app_url, token, app, org["oid"], a.role, choice["id"], cols, rows, a.lang)
+    _con_run(a.app_url, token, app, org["oid"], a.role, choice["id"], cols, rows, a.lang, center)
 
 
 
