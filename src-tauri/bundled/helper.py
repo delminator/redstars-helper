@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.56'
+VERSION = '0.5.57'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -2871,12 +2871,18 @@ _LOGIN_L10N = {
            "user": "Nom d'utilisateur", "pw": "Mot de passe", "ph": "votre_pseudo",
            "envoi": "ENVOI", "submit": "se connecter",
            "noacc": "Pas de compte ? Inscription sur le web.",
-           "hint": "↵ valider  ·  ↑↓ champ  ·  Echap annuler"},
+           "hint": "↵ valider  ·  ↑↓ champ  ·  Echap annuler",
+           "f1": "F1 · accessibilité (voix, liste numérotée)",
+           "cont": "CONTINUER", "contsub": "session déjà ouverte",
+           "hint2": "↵ continuer  ·  Echap quitter"},
     "en": {"sub": "Multi-service management platform",
            "user": "Username", "pw": "Password", "ph": "your_username",
            "envoi": "ENTER", "submit": "sign in",
            "noacc": "No account? Register on the web.",
-           "hint": "↵ submit  ·  ↑↓ field  ·  Esc cancel"},
+           "hint": "↵ submit  ·  ↑↓ field  ·  Esc cancel",
+           "f1": "F1 · accessibility (speech, numbered list)",
+           "cont": "CONTINUE", "contsub": "session already open",
+           "hint2": "↵ continue  ·  Esc quit"},
 }
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
@@ -2919,26 +2925,29 @@ def _con_login_read(fd):
         return ("key", "skip")
 
 
-def _con_login_screen(a):
-    """L'écran de login à la marque RedStars — la réplique Vidéotex du login web.
+def _con_login_screen(a, logged_in=False):
+    """L'écran de marque RedStars — la réplique Vidéotex du login web, montré À CHAQUE
+    lancement, y compris quand la session est déjà ouverte.
 
-    Le login PRÉCÈDE l'authentification : il ne peut donc pas venir du moteur (la
-    trame exige déjà un jeton). Il est dessiné ici, une fois, tenant en 40 colonnes :
-    marque encadrée, deux champs, le mot de passe masqué au fur et à mesure. Le web
-    tapait le mot de passe dans un champ avec gestionnaire ; ici on rend au moins des
-    points qui avancent et un curseur, au lieu du noir muet de getpass.
+    Deux modes, même marque :
+      • login (pas de session) : deux champs, le mot de passe masqué au fur et à mesure.
+        Renvoie (utilisateur, mot_de_passe).
+      • `logged_in` (session déjà là) : PAS de champs, juste un bouton « Continuer ».
+        Renvoie "continue" (on entre) ou "quit" (Echap).
 
-    Renvoie (utilisateur, mot_de_passe), ou None quand ce n'est pas un vrai terminal
-    (pipe, cron), en mode accessible, ou si l'utilisateur annule — l'appelant retombe
-    alors sur la saisie ligne à ligne, qui reste la voie sûre pour un lecteur d'écran.
-    F1 y bascule l'accessibilité, comme partout ailleurs."""
+    Dans les deux cas la mention F1 (accessibilité) est ICI — il n'y a plus d'écran
+    d'accueil séparé. F1 bascule le mode accessible et poursuit.
+
+    Renvoie None (mode login) quand ce n'est pas un vrai terminal (pipe, cron) ou en mode
+    accessible : l'appelant retombe alors sur la saisie ligne à ligne, sûre pour un
+    lecteur d'écran. En `logged_in`, ces mêmes cas renvoient "continue" (rien à saisir)."""
     if a.accessible:
-        return None                            # lecteur d'écran : pas de formulaire spatial
+        return "continue" if logged_in else None   # lecteur d'écran : pas d'écran spatial
     fd = sys.stdin.fileno()
     try:
         old = termios.tcgetattr(fd)
     except (termios.error, ValueError):
-        return None                            # pas un tty : saisie ligne à ligne
+        return "continue" if logged_in else None    # pas un tty
     tr = _LOGIN_L10N.get(a.lang, _LOGIN_L10N["fr"])
     try:
         tcols = os.get_terminal_size().columns
@@ -2974,24 +2983,42 @@ def _con_login_screen(a):
         return frame_row("[" + shown.ljust(fw) + "]", C_ACT if idx == cur else C_DIM)
 
     def screen():
-        return [
+        head = [
             "",
             center(f"{C_STAR}★{R}  {C_BRAND}R E D S T A R S{R}  {C_STAR}★{R}"),
             center(f"{C_DIM}{tr['sub']}{R}"),
             "",
-            center(f"{C_FRAME}┌{'─' * IW}┐{R}"),
-            frame_row(tr["user"], C_ACT if cur == 0 else C_DIM),
-            frame_field(0, False, tr["ph"]),
-            frame_row(""),
-            frame_row(tr["pw"], C_ACT if cur == 1 else C_DIM),
-            frame_field(1, True),
-            center(f"{C_FRAME}└{'─' * IW}┘{R}"),
-            "",
-            center(f"{C_OK}{tr['envoi']}{R} {C_DIM}{tr['submit']}{R}"),
-            center(f"{C_DIM}{tr['noacc']}{R}"),
-            "",
-            center(f"{C_DIM}{tr['hint']}{R}"),
         ]
+        if logged_in:
+            # Déjà connecté : pas de champs, un bouton « Continuer » en vidéo inverse.
+            body = [
+                "",
+                center(f"{C_OK}\x1b[7m  ▶  {tr['cont']}  {R}"),
+                "",
+                center(f"{C_DIM}{tr['contsub']}{R}"),
+                "",
+                center(f"{C_OK}{tr['envoi']}{R} {C_DIM}{tr['cont'].lower()}{R}"),
+            ]
+        else:
+            body = [
+                center(f"{C_FRAME}┌{'─' * IW}┐{R}"),
+                frame_row(tr["user"], C_ACT if cur == 0 else C_DIM),
+                frame_field(0, False, tr["ph"]),
+                frame_row(""),
+                frame_row(tr["pw"], C_ACT if cur == 1 else C_DIM),
+                frame_field(1, True),
+                center(f"{C_FRAME}└{'─' * IW}┘{R}"),
+                "",
+                center(f"{C_OK}{tr['envoi']}{R} {C_DIM}{tr['submit']}{R}"),
+                center(f"{C_DIM}{tr['noacc']}{R}"),
+            ]
+        # La mention F1 vit ICI, sur l'écran de marque — plus d'écran d'accueil séparé.
+        foot = [
+            "",
+            center(f"{C_STAR}{tr['f1']}{R}"),
+            center(f"{C_DIM}{tr['hint2'] if logged_in else tr['hint']}{R}"),
+        ]
+        return head + body + foot
 
     try:
         tty.setraw(fd)
@@ -2999,6 +3026,16 @@ def _con_login_screen(a):
             sys.stdout.write("\x1b[?25l\x1b[2J\x1b[H" + "\r\n".join(screen()) + "\r\n")
             sys.stdout.flush()
             kind, v = _con_login_read(fd)
+            if v == "a11y":                         # F1 : bascule accessibilité, ici même
+                a.accessible = True
+                return "continue" if logged_in else None
+            if logged_in:
+                # Un seul choix : continuer (↵ / une touche) ou quitter (Echap).
+                if v == "enter" or kind == "char":
+                    return "continue"
+                if v in ("esc", "quit"):
+                    return "quit"
+                continue                            # autre contrôle : on reste
             if kind == "char":
                 fields[cur] += v
             elif v == "back":
@@ -3007,9 +3044,6 @@ def _con_login_screen(a):
                 cur = 1 - cur
             elif v == "up":
                 cur = 0
-            elif v == "a11y":                   # F1 : bascule accessibilité, comme au welcome
-                a.accessible = True
-                return None
             elif v == "enter":
                 if cur == 0:
                     cur = 1                      # ENVOI depuis l'identifiant → passe au mot de passe
@@ -3501,16 +3535,12 @@ def run_console(argv):
     # n'utilise pas la console. Elle ne doit se produire QU'UNE FOIS.
     if not token:
         token = _con_session_load(a.api_url) or ""
-        if token:
-            print("Session retrouvée — pas de mot de passe à ressaisir.\n")
 
-    if token:
-        pass
-    else:
+    if not token:
         # L'écran de login à la marque, dessiné ici parce qu'il précède l'auth (le
         # moteur exige déjà un jeton). On ne le montre que si RIEN n'est pré-fourni :
         # --user/--password sont là pour les scripts, et doivent court-circuiter la
-        # saisie interactive, pas la décorer.
+        # saisie interactive, pas la décorer. F1 y bascule l'accessibilité.
         creds = None
         if not (a.user or a.password):
             creds = _con_login_screen(a)
@@ -3528,15 +3558,12 @@ def run_console(argv):
             _con_session_save(token, d.get("refresh_token"), a.api_url)
         except urllib.error.HTTPError as e:
             sys.exit(f"Connexion refusée (HTTP {e.code}).")
-
-    # L'organisation, dessinée par le MOTEUR comme tout le reste.
-    #
-    # C'était le dernier écran que le client peignait lui-même : une liste texte,
-    # imprimée avant même de demander quoi que ce soit au moteur. Le premier écran
-    # après le mot de passe était donc le seul que personne n'avait dessiné.
-    # F1 au login = mode accessibilite. C'est une OPTION qu'on active, pas un flag.
-    if _con_welcome(a):
-        a.accessible = True
+    else:
+        # Session DÉJÀ ouverte : on montre quand même l'écran de marque — logo, cadre —
+        # mais avec un simple bouton « Continuer ». La mention F1 (accessibilité) est là
+        # aussi : c'est le seul écran d'accueil, il n'y en a plus de séparé.
+        if _con_login_screen(a, logged_in=True) == "quit":
+            return
 
     # PAS de choix d'organisation : le DASHBOARD, comme le web — l'union des apps de
     # toutes les orgs de l'utilisateur. On ne choisit pas une org, on choisit une APP,
