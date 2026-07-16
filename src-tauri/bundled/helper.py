@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.55'
+VERSION = '0.5.56'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -3026,7 +3026,8 @@ def _con_login_screen(a):
         sys.stdout.flush()
 
 
-def _con_run(app_url, token, app, org, role, slot, cols, rows, lang, center=False):
+def _con_run(app_url, token, app, org, role, slot, cols, rows, lang, center=False,
+             modal=None, item=None, src=None):
     # On suit le NUMÉRO du focusable, pas sa ligne.
     #
     # Une ligne pouvait porter une seule chose à sélectionner — jusqu'à l'accueil, où
@@ -3046,6 +3047,7 @@ def _con_run(app_url, token, app, org, role, slot, cols, rows, lang, center=Fals
             # fenêtre. Le client n'a pas d'état de défilement à tenir — et donc pas
             # d'occasion de le désynchroniser.
             f = _con_frame(app_url, token, app=app, org=org, role=role, slot=slot,
+                      modal=modal, item=item, src=src,
                       sel=sel, cols=cols, rows=rows, lang=lang)
             if "error" in f:
                 sys.stdout.write("\x1b[2J\x1b[H\x1b[31m" + f["error"].replace("\n", "\r\n") + "\x1b[0m\r\n\r\n")
@@ -3082,12 +3084,20 @@ def _con_run(app_url, token, app, org, role, slot, cols, rows, lang, center=Fals
                 # ne sait pas ce qu'est une application ; il sait suivre une route.
                 if 0 <= here < len(foc):
                     act = foc[here].get("action") or {}
-                    if act.get("kind") == "route":
+                    kind = act.get("kind")
+                    if kind == "route":
                         return act
-                    sys.stdout.write("\r\n\x1b[33m→ " + json.dumps(act, ensure_ascii=False) + "\x1b[0m\r\n")
-                    sys.stdout.write("\x1b[2m(le rendu des modales n'est pas encore écrit — une touche)\x1b[0m")
-                    sys.stdout.flush()
-                    os.read(fd, 1)
+                    if kind == "open-modal":
+                        # Descendre d'un cran : le DÉTAIL plein écran (fiche membre, détail
+                        # de ligne). La modale est une trame comme une autre — le moteur rend
+                        # le composant de l'app. Retour y revient à la liste ; Quitter sort.
+                        sub = _con_run(app_url, token, app, org, role, None, cols, rows, lang,
+                                       center, modal=act.get("modal"), item=act.get("itemId"),
+                                       src=slot)
+                        if sub == "quit":
+                            return "quit"
+                        # "back"/None → on reste dans la liste (la boucle la redessine)
+                    # kind == "none"/inconnu : rien à ouvrir, on ignore l'Entrée
             elif k == "back":
                 # Retour = remonter d'UN cran (slot → sommaire), pas quitter. C'est
                 # l'appelant qui décide où mène ce cran ; ici on dit seulement « en haut ».
@@ -3098,6 +3108,25 @@ def _con_run(app_url, token, app, org, role, slot, cols, rows, lang, center=Fals
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         sys.stdout.write("\x1b[2J\x1b[H")
         sys.stdout.flush()
+
+
+def _con_modal_accessible(app_url, token, app, org, role, modal, item, src, lang):
+    """Le DÉTAIL (fiche membre, détail de ligne) en texte pur, pour lecteur d'écran.
+    Le moteur rend le composant de l'app ; on n'écrit aucune vue de plus."""
+    q = {k: v for k, v in dict(app=app, org=org, role=role, modal=modal, item=item,
+                               src=src, lang=lang, a11y=1).items() if v is not None}
+    url = f"{app_url}/api/console/frame/?" + urllib.parse.urlencode(q)
+    try:
+        txt = _con_req(url, headers={"Authorization": f"Bearer {token}"}, raw=True).decode()
+    except urllib.error.HTTPError as e:
+        print(json.loads(e.read() or b"{}").get("error", f"Erreur HTTP {e.code}"))
+        return
+    print()
+    print(txt)
+    try:
+        input("\n(Entrée pour revenir) ")
+    except (EOFError, KeyboardInterrupt):
+        pass
 
 
 def _con_run_accessible(app_url, token, app, org, role, slot, lang):
@@ -3143,8 +3172,14 @@ def _con_run_accessible(app_url, token, app, org, role, slot, lang):
             if not hit:
                 print(f"Il n'y a pas d'élément numéro {answer}.")
                 continue
+            act = hit.get("action") or {}
+            if act.get("kind") == "open-modal":
+                # Le détail, plein texte — on descend d'un cran, comme le web.
+                _con_modal_accessible(app_url, token, app, org, role, act.get("modal"),
+                                      act.get("itemId"), slot, lang)
+                continue
             print(f"\n{hit['speech']}")
-            print("(l'ouverture du détail n'est pas encore écrite)")
+            print("(pas d'action disponible ici)")
             continue
         print("Tapez un numéro, ou 0 pour revenir.")
 
