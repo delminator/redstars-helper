@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.60'
+VERSION = '0.5.61'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -2575,6 +2575,7 @@ def _con_orgs(api, token):
 # l'annonce (COLORTERM), sinon 256 couleurs, la valeur sûre partout. Le Minitel (vraie
 # console Linux + setfont) reste en 256 : le noyau ne rend pas le truecolor de toute façon.
 _CON_COLOR = "ansi256"
+_CON_IMG = False       # ce client sait-il décoder les images nn: (négocié au démarrage)
 
 def _con_color_depth(minitel):
     if minitel:
@@ -2601,6 +2602,10 @@ def _con_frame(app_url, token, **q):
     # images quand on demande truecolor (rendu Web), la palette 256 sinon.
     if "color" not in q:
         q["color"] = _CON_COLOR
+    # Capacité image : on n'annonce `img=1` que si ce client sait décoder les nn: hashes,
+    # pour que le serveur ne réserve d'espace-avatar que là où on saura le remplir.
+    if "img" not in q and _CON_IMG:
+        q["img"] = 1
     url = f"{app_url}/api/console/frame/?" + urllib.parse.urlencode(q)
     try:
         return _con_req(url, headers={"Authorization": f"Bearer {token}"})
@@ -3478,6 +3483,56 @@ def _con_offset(cols, rows, center):
     return max(0, (rr - rows) // 2), max(0, (rc - cols) // 2)
 
 
+# img_render (décodeur nn: + rendu quadrant) vit CÔTÉ BUNDLE TAURI, pas dans helper.py :
+# numpy/onnxruntime + le modèle 3,7 Mo y sont, pour que helper.py (signé, auto-updaté seul
+# dans le cache OS) reste léger. On le découvre dans le bundle exactement comme les codecs —
+# helper.py auto-updaté n'a PAS img_render.py à côté de lui, il faut aller le chercher.
+_IMG = {'mod': None, 'tried': False}
+
+def _img_dirs():
+    import glob as _glob
+    cands = [DEMO_DIR]
+    env = os.environ.get('REDSTARS_HELPER_BUNDLED_DIR')
+    if env:
+        cands.append(Path(env))
+    for pat in (
+        '/usr/lib/*/bundled/img_render.py', '/usr/lib/*/resources/bundled/img_render.py',
+        '/usr/share/*/bundled/img_render.py', '/opt/*/bundled/img_render.py',
+        '/tmp/.mount_*/usr/lib/*/bundled/img_render.py',
+        '/Applications/*.app/Contents/Resources/bundled/img_render.py',
+        str(Path.home() / 'Applications' / '*.app' / 'Contents' / 'Resources' / 'bundled' / 'img_render.py'),
+    ):
+        for hit in _glob.glob(pat):
+            cands.append(Path(hit).parent)
+    return cands
+
+def _img_mod():
+    """Charge paresseusement img_render depuis le bundle Tauri. None si absent (numpy/onnx
+    ou modèle manquants) → le repli texte du serveur reste."""
+    if _IMG['tried']:
+        return _IMG['mod']
+    _IMG['tried'] = True
+    try:
+        import sys as _sys
+        for d in _img_dirs():
+            if (d / 'img_render.py').is_file():
+                if str(d) not in _sys.path:
+                    _sys.path.insert(0, str(d))
+                break
+        import img_render
+        _IMG['mod'] = img_render
+    except Exception:
+        _IMG['mod'] = None
+    return _IMG['mod']
+
+def _con_img_capable():
+    m = _img_mod()
+    try:
+        return bool(m and m.capable())
+    except Exception:
+        return False
+
+
 def _con_blit_images(images, top, left):
     """Poser les images du RÉSEAU DE RENDU (avatars, vignettes) par-dessus la trame.
 
@@ -3487,9 +3542,8 @@ def _con_blit_images(images, top, left):
     (img_render + modèle bundlé), on rend la tuile en texte quadrant — le MÊME moteur que le
     Web — et on la blitte à sa position. Sans décodeur (modèle/onnxruntime absents), on ne
     touche à rien : le repli texte que le serveur a déjà dessiné (initiales/glyphe) reste."""
-    try:
-        import img_render
-    except Exception:
+    img = _img_mod()
+    if img is None:
         return
     for im in images or []:
         h = im.get("hash")
@@ -3498,7 +3552,7 @@ def _con_blit_images(images, top, left):
         if not h or wc <= 0 or hc <= 0:
             continue
         try:
-            lines = img_render.render_tile(h, wc, hc)
+            lines = img.render_tile(h, wc, hc)
         except Exception:
             lines = None
         if not lines:
@@ -3540,8 +3594,11 @@ def run_console(argv):
 
     # Négocier la profondeur de couleur une fois, ici : truecolor sur un émulateur qui
     # l'annonce (icônes au rendu Web), 256 couleurs partout ailleurs et en Minitel.
-    global _CON_COLOR
+    global _CON_COLOR, _CON_IMG
     _CON_COLOR = _con_color_depth(a.minitel)
+    # Capacité image : uniquement sur un terminal truecolor (une tuile d'avatar en
+    # mosaïque n'a pas de sens en Videotex/256) ET si le décodeur bundlé est là.
+    _CON_IMG = (not a.minitel) and _CON_COLOR == "truecolor" and _con_img_capable()
 
     # Mode Minitel : donner à la FENÊTRE la forme d'un Minitel, 40×24, et remplir
     # l'écran de gros caractères.

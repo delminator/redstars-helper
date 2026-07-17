@@ -94,6 +94,22 @@ def _find_model():
     return None
 
 
+def capable():
+    """Le helper peut-il décoder ? Sonde LÉGÈRE — numpy + modèle bundlé + onnxruntime
+    présents, SANS lancer d'inférence (pas d'init de session). Sert à la négociation :
+    le client n'annonce `img=1` au serveur que si cette sonde passe, pour que le serveur
+    ne réserve d'espace-image que là où le client saura le remplir."""
+    if _np is None:
+        return False
+    if _find_model() is None:
+        return False
+    try:
+        import onnxruntime  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
 def _session():
     global _SESSION, _SESSION_TRIED
     if _SESSION_TRIED:
