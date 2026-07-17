@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.59'
+VERSION = '0.5.60'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -3112,6 +3112,11 @@ def _con_run(app_url, token, app, org, role, slot, cols, rows, lang, center=Fals
             # cadre 40×24 flotte dans une console plus large que lui.
             sys.stdout.write(_con_center(f["ansi"], cols, rows) if center
                              else f["ansi"].replace("\n", "\r\n"))
+            # Les images du réseau de rendu (avatars, vignettes) sont posées PAR-DESSUS la
+            # trame : décodées et rendues en local (le décodeur nn: n'existe pas côté serveur).
+            if f.get("images"):
+                t, l = _con_offset(cols, rows, center)
+                _con_blit_images(f["images"], t, l)
             sys.stdout.flush()
 
             k = _con_read_key(fd)
@@ -3458,6 +3463,48 @@ def _con_center(ansi, cols, rows):
     for i, ln in enumerate(body.split("\n")):
         out.append(f"\x1b[{top + i + 1};{left + 1}H" + ln.rstrip("\r"))
     return "".join(out)
+
+
+def _con_offset(cols, rows, center):
+    """Coin haut-gauche du cadre dans le terminal réel : (0,0) en mode normal (la trame
+    commence à « home »), centré en mode Minitel — la même arithmétique que _con_center."""
+    if not center:
+        return 0, 0
+    try:
+        sz = os.get_terminal_size()
+        rc, rr = sz.columns, sz.lines
+    except OSError:
+        rc, rr = cols, rows
+    return max(0, (rr - rows) // 2), max(0, (rc - cols) // 2)
+
+
+def _con_blit_images(images, top, left):
+    """Poser les images du RÉSEAU DE RENDU (avatars, vignettes) par-dessus la trame.
+
+    Le serveur ne peut pas les rendre : le décodeur `nn:` ne tourne pas côté serveur. Il
+    marque donc juste OÙ et QUEL hash — `images: [{hash, row, col, w, h}]`, coordonnées en
+    cellules dans le cadre. Ici, sur la machine de l'utilisateur, on décode le hash en local
+    (img_render + modèle bundlé), on rend la tuile en texte quadrant — le MÊME moteur que le
+    Web — et on la blitte à sa position. Sans décodeur (modèle/onnxruntime absents), on ne
+    touche à rien : le repli texte que le serveur a déjà dessiné (initiales/glyphe) reste."""
+    try:
+        import img_render
+    except Exception:
+        return
+    for im in images or []:
+        h = im.get("hash")
+        wc, hc = int(im.get("w", 0)), int(im.get("h", 0))
+        row, col = int(im.get("row", 0)), int(im.get("col", 0))
+        if not h or wc <= 0 or hc <= 0:
+            continue
+        try:
+            lines = img_render.render_tile(h, wc, hc)
+        except Exception:
+            lines = None
+        if not lines:
+            continue
+        for ri, ln in enumerate(lines):
+            sys.stdout.write(f"\x1b[{top + row + ri + 1};{left + col + 1}H" + ln)
 
 
 def run_console(argv):
