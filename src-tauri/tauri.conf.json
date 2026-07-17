@@ -50,6 +50,8 @@
       "bundled/final/solo_champion_latent.pth",
       "bundled/codec_onnx.py",
       "bundled/codec_numpy.py",
+      "bundled/img_render.py",
+      "bundled/avatar_decoder.onnx",
       "bundled/nn_numpy.py",
       "bundled/enc32.onnx",
       "bundled/enc32.onnx.data",

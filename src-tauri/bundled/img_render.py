@@ -74,18 +74,26 @@ _DECODE_CACHE = {}     # hash -> indices 256×256 (décoder une fois, l'avatar s
 _TILE_CACHE = {}       # (hash, w, h) -> lignes ANSI prêtes à blitter
 
 
+# Le modèle des avatars a un nom DÉDIÉ : `avatar_decoder.onnx`, PAS le `decoder.onnx`
+# déjà bundlé — celui-là sert la page démo et a des poids DIFFÉRENTS (vérifié : ~5 % de
+# concordance). Décoder les vrais avatars avec lui donnerait des images fausses en silence.
+# Il faut le décodeur PRODUCTION du frontend (public/models/decoder.onnx, celui qui a encodé
+# les hashes), livré sous ce nom dédié. Tant qu'il n'est pas là → capable()=False, inerte.
+_MODEL_NAME = "avatar_decoder.onnx"
+
+
 def _find_model():
-    """Le modèle est bundlé dans l'app Tauri (resources). On le cherche aux mêmes
-    emplacements que les codecs (voir helper.py _load_codec)."""
-    env = os.environ.get("REDSTARS_DECODER_ONNX")
+    """Le décodeur d'avatars, bundlé dans l'app Tauri sous un nom dédié. Cherché aux mêmes
+    emplacements que les codecs. Renvoie None s'il manque (repli texte, jamais de faux rendu)."""
+    env = os.environ.get("REDSTARS_AVATAR_DECODER_ONNX")
     if env and os.path.isfile(env):
         return env
     pats = [
-        "/usr/lib/*/bundled/decoder.onnx", "/usr/lib/*/resources/bundled/decoder.onnx",
-        "/usr/share/*/bundled/decoder.onnx", "/opt/*/bundled/decoder.onnx",
-        "/tmp/.mount_*/usr/lib/*/bundled/decoder.onnx",
-        "/Applications/*.app/Contents/Resources/bundled/decoder.onnx",
-        os.path.join(os.path.dirname(__file__), "decoder.onnx"),
+        "/usr/lib/*/bundled/" + _MODEL_NAME, "/usr/lib/*/resources/bundled/" + _MODEL_NAME,
+        "/usr/share/*/bundled/" + _MODEL_NAME, "/opt/*/bundled/" + _MODEL_NAME,
+        "/tmp/.mount_*/usr/lib/*/bundled/" + _MODEL_NAME,
+        "/Applications/*.app/Contents/Resources/bundled/" + _MODEL_NAME,
+        os.path.join(os.path.dirname(__file__), _MODEL_NAME),
     ]
     for pat in pats:
         hits = sorted(glob.glob(pat))
