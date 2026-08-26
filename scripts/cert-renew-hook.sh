@@ -1,54 +1,42 @@
 #!/usr/bin/env bash
-# Certbot deploy-hook for local.redlinks.fr — re-bundles the helper .deb when
-# the Let's Encrypt cert renews and pushes a patch release.
+# Certbot deploy-hook for local.redlinks.fr.
+#
+# Runs after every successful renewal of the helper's HTTPS cert. Its ONE job
+# is to keep THIS machine working: drop the fresh cert into the running helper's
+# read paths and restart it so browser<->helper HTTPS keeps validating. It does
+# NOT ship to the fleet — that is a reviewed step: run
+#   scripts/publish-helper-cert.sh
+# which re-embeds the cert into helper.py and cuts a script-py release that every
+# helper self-updates. (History: the old hook used stale /home/delminator/redstars
+# paths — missing the /red/ segment — and only touched the on-disk bundled cert,
+# never the EMBEDDED one, so self-updated helpers kept serving the dead cert.)
 #
 # Install:
-#   sudo cp cert-renew-hook.sh /etc/letsencrypt/renewal-hooks/deploy/redstars-helper.sh
-#   sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/redstars-helper.sh
-#
-# Trigger: every successful certbot renewal (3 months by default) runs this.
-# It bumps the patch version of the helper, builds a release, and pushes a
-# git tag → GitHub Actions picks up the tag and publishes the new release
-# (signed Linux/macOS/Windows artifacts via the release.yml workflow).
-
+#   sudo install -m755 scripts/cert-renew-hook.sh \
+#     /etc/letsencrypt/renewal-hooks/deploy/redstars-helper.sh
 set -euo pipefail
 
-REPO="${HELPER_REPO:-/home/delminator/redstars/apps/helper-tauri}"
-DEMO="${DEMO_DIR:-/home/delminator/redstars/scripts/image-autoencoder/output/demo}"
-CERT_LIVE="${RENEWED_LINEAGE:-/etc/letsencrypt/live/local.redlinks.fr}"
-
-# Only run when our domain renewed (certbot calls this hook for every cert).
 case "${RENEWED_DOMAINS:-}" in
   *local.redlinks.fr*) ;;
-  *) echo "[helper-renew] not our domain (RENEWED_DOMAINS=${RENEWED_DOMAINS:-}) — skip"; exit 0 ;;
+  *) echo "[helper-renew] not our domain — skip"; exit 0 ;;
 esac
 
-echo "[helper-renew] new cert at $CERT_LIVE — repackaging helper"
+LIVE="${RENEWED_LINEAGE:-/etc/letsencrypt/live/local.redlinks.fr}"
+USER_NAME="${HELPER_USER:-delminator}"
+HELPER_DIR="/home/${USER_NAME}/.local/share/fr.redlinks.redstars-helper"
+TMP_CERTS="/tmp/redstars-helper-certs"
 
-# 1. Copy fresh cert into the demo dir (dev/test) AND into the helper-tauri repo
-#    bundled/ dir (which the .deb/.dmg/.msi bundles as resources at build time).
-install -m 644 "$CERT_LIVE/fullchain.pem" "$DEMO/cert.pem"
-install -m 600 "$CERT_LIVE/privkey.pem"   "$DEMO/key.pem"
-install -m 644 "$CERT_LIVE/fullchain.pem" "$REPO/src-tauri/bundled/cert.pem"
-install -m 600 "$CERT_LIVE/privkey.pem"   "$REPO/src-tauri/bundled/key.pem"
-chown delminator:delminator "$DEMO/cert.pem" "$DEMO/key.pem" \
-  "$REPO/src-tauri/bundled/cert.pem" "$REPO/src-tauri/bundled/key.pem"
+for d in "$HELPER_DIR" "$TMP_CERTS"; do
+  [ -d "$d" ] || continue
+  install -m644 -o "$USER_NAME" -g "$USER_NAME" "$LIVE/fullchain.pem" "$d/cert.pem"
+  install -m600 -o "$USER_NAME" -g "$USER_NAME" "$LIVE/privkey.pem"   "$d/key.pem"
+  echo "[helper-renew] refreshed cert in $d"
+done
 
-# 2. Bump patch version in tauri.conf.json + Cargo.toml
-cd "$REPO"
-CUR=$(grep -oE '"version": "[0-9]+\.[0-9]+\.[0-9]+"' src-tauri/tauri.conf.json | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-IFS=. read -r MAJ MIN PATCH <<< "$CUR"
-NEW="${MAJ}.${MIN}.$((PATCH + 1))"
-echo "[helper-renew] $CUR → $NEW"
-sed -i "s/\"version\": \"$CUR\"/\"version\": \"$NEW\"/" src-tauri/tauri.conf.json
-sed -i "s/^version = \"$CUR\"$/version = \"$NEW\"/" src-tauri/Cargo.toml
+# Restart the running helper (Tauri child) so it reloads the SSLContext. The
+# Tauri parent respawns it; harmless if it isn't running.
+pkill -u "$USER_NAME" -f 'fr.redlinks.redstars-helper/helper.py' 2>/dev/null || true
 
-# 3. Commit + tag + push (GH Actions release workflow takes it from here)
-sudo -u delminator git -C "$REPO" add src-tauri/tauri.conf.json src-tauri/Cargo.toml \
-  src-tauri/bundled/cert.pem src-tauri/bundled/key.pem
-sudo -u delminator git -C "$REPO" -c user.email=nikola.grange@gmail.com -c user.name=Delminator commit \
-  -m "chore: bump to v$NEW — auto cert renewal $(date -I)"
-sudo -u delminator git -C "$REPO" push origin main
-sudo -u delminator git -C "$REPO" tag "v$NEW"
-sudo -u delminator git -C "$REPO" push origin "v$NEW"
-echo "[helper-renew] pushed v$NEW — GH Actions will publish .deb/.dmg/.msi"
+END=$(openssl x509 -noout -enddate -in "$LIVE/fullchain.pem" 2>/dev/null | cut -d= -f2)
+echo "[helper-renew] local cert refreshed (valid to ${END})."
+echo "[helper-renew] FLEET: run redstars/apps/helper-tauri/scripts/publish-helper-cert.sh to ship to all users."
