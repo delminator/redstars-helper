@@ -44,7 +44,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.51'
+VERSION = '0.5.62'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -55,8 +55,8 @@ KEY_FILE = DEMO_DIR / 'key.pem'
 # resort when the file-on-disk versions aren't reachable — typical after
 # auto-update of helper.py to the OS cache dir, which leaves the bundled
 # certs unreachable. Renew window: see `openssl x509 -enddate -in cert.pem`.
-_EMBEDDED_CERT_B64 = 'LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURqVENDQXhPZ0F3SUJBZ0lTQm9vR1J2SVZYakRWQk05TjVoMm1oSFlpTUFvR0NDcUdTTTQ5QkFNRE1ESXgKQ3pBSkJnTlZCQVlUQWxWVE1SWXdGQVlEVlFRS0V3MU1aWFFuY3lCRmJtTnllWEIwTVFzd0NRWURWUVFERXdKRgpOekFlRncweU5qQTFNRFV4TXpNMU1EUmFGdzB5TmpBNE1ETXhNek0xTUROYU1Cd3hHakFZQmdOVkJBTVRFV3h2ClkyRnNMbkpsWkd4cGJtdHpMbVp5TUZrd0V3WUhLb1pJemowQ0FRWUlLb1pJemowREFRY0RRZ0FFZjVUWmdDZXUKYUpzcUxlZ3NjZGQ3VlpmZW5FWmhqeHJZazVtTEh0Z1F6bkRucFRINTUwTEJhNFVYeHFJc0ZYcVk2OGxqSkRmegpSYlhPb1Y0MlNNTDdwNk9DQWgwd2dnSVpNQTRHQTFVZER3RUIvd1FFQXdJSGdEQVRCZ05WSFNVRUREQUtCZ2dyCkJnRUZCUWNEQVRBTUJnTlZIUk1CQWY4RUFqQUFNQjBHQTFVZERnUVdCQlNzSXBIYlNSVytOSXRHNlVHbVV0NXMKQVMzS2pqQWZCZ05WSFNNRUdEQVdnQlN1U0o3Y2h4MUVvRy9hb3VWZ2RBUjR3cHdBZ0RBeUJnZ3JCZ0VGQlFjQgpBUVFtTUNRd0lnWUlLd1lCQlFVSE1BS0dGbWgwZEhBNkx5OWxOeTVwTG14bGJtTnlMbTl5Wnk4d0hBWURWUjBSCkJCVXdFNElSYkc5allXd3VjbVZrYkdsdWEzTXVabkl3RXdZRFZSMGdCQXd3Q2pBSUJnWm5nUXdCQWdFd0xRWUQKVlIwZkJDWXdKREFpb0NDZ0hvWWNhSFIwY0RvdkwyVTNMbU11YkdWdVkzSXViM0puTHpNMUxtTnliRENDQVF3RwpDaXNHQVFRQjFua0NCQUlFZ2YwRWdmb0ErQUIzQU1JeGZsZEZHYU5GN244NDNyS1FRZXZId2lGYUlyOS8xYld0CmRwclpEbExOQUFBQm5maVBBS1FBQUFRREFFZ3dSZ0loQU41Yml2R012R0tzdVJrR1ZFWkdPSmsxNG1IdmRoMnEKeEQ5czkvc28wS3BmQWlFQWt4eGFQZmZnVElOaHZFWVVOeG9md3NTa2JqZFdRaWFQRFpFQndwekxVd1lBZlFBYQppNTFyRC82L2diUjVPY2JTTVFxRzF0RUMxUEJHNGhnc25lTmZYaVlsN3dBQUFaMzRqd0R0QUFnQUFBVUFEenY4CllnUURBRVl3UkFJZ2FMODhkL0RPQ1Y4RklleklFYis5YkErWWcxWFpINFZwSTdRMHZpdkp1dDBDSUhBcWNtVEMKSksrRDdwckp2cS9ZMzFSMERpZXZCUTN6RGxISG9ka1IxNk16TUFvR0NDcUdTTTQ5QkFNREEyZ0FNR1VDTUNTTApYbHpieTY1YzY3R1BISDFKV2tKY2RDcG13NjU5TWovVDlXZmM5c3QxalUyck5UZk5XR1RXQTF4MG1oaWlrQUl4CkFMUnJESEVxUmxNc2crcWZuSktHZ2NpdHMydzlKUURqS2JndmgxVnNTV3d5N0QwVE5UOWpKbmgxTFBFYjJ0SXYKN0E9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCi0tLS0tQkVHSU4gQ0VSVElGSUNBVEUtLS0tLQpNSUlFVnpDQ0FqK2dBd0lCQWdJUkFLcDE4ZVlyandvaUNXYlRpNy9VdXFFd0RRWUpLb1pJaHZjTkFRRUxCUUF3ClR6RUxNQWtHQTFVRUJoTUNWVk14S1RBbkJnTlZCQW9USUVsdWRHVnlibVYwSUZObFkzVnlhWFI1SUZKbGMyVmgKY21Ob0lFZHliM1Z3TVJVd0V3WURWUVFERXd4SlUxSkhJRkp2YjNRZ1dERXdIaGNOTWpRd016RXpNREF3TURBdwpXaGNOTWpjd016RXlNak0xT1RVNVdqQXlNUXN3Q1FZRFZRUUdFd0pWVXpFV01CUUdBMVVFQ2hNTlRHVjBKM01nClJXNWpjbmx3ZERFTE1Ba0dBMVVFQXhNQ1JUY3dkakFRQmdjcWhrak9QUUlCQmdVcmdRUUFJZ05pQUFSQjZBU1QKQ0ZoL3ZqY3dETUNnUWVyK1Z0cUVrejdKQU51clp4TFArVTlUQ2Vpb0w2c3A1WjhWUnZSYllrNFAxSU5CbWJlZgpRSEpGSEN4Y1NqS213dHZHQldwbC85cmE4SFcwUURzVWFKVzJxT0pxY2VKMFpWRlQzaGJVSGlmQk0vMmpnZmd3CmdmVXdEZ1lEVlIwUEFRSC9CQVFEQWdHR01CMEdBMVVkSlFRV01CUUdDQ3NHQVFVRkJ3TUNCZ2dyQmdFRkJRY0QKQVRBU0JnTlZIUk1CQWY4RUNEQUdBUUgvQWdFQU1CMEdBMVVkRGdRV0JCU3VTSjdjaHgxRW9HL2FvdVZnZEFSNAp3cHdBZ0RBZkJnTlZIU01FR0RBV2dCUjV0Rm5tZTdibDVBRnpnQWlJeUJwWTl1bWJiakF5QmdnckJnRUZCUWNCCkFRUW1NQ1F3SWdZSUt3WUJCUVVITUFLR0ZtaDBkSEE2THk5NE1TNXBMbXhsYm1OeUxtOXlaeTh3RXdZRFZSMGcKQkF3d0NqQUlCZ1puZ1F3QkFnRXdKd1lEVlIwZkJDQXdIakFjb0JxZ0dJWVdhSFIwY0RvdkwzZ3hMbU11YkdWdQpZM0l1YjNKbkx6QU5CZ2txaGtpRzl3MEJBUXNGQUFPQ0FnRUFqeDY2ZkRkTGs1eXdGbjNDekExdzFxZnlsSFVECmFFZjBRWnBYY0pzZWRkSkdTZmJVVU92Yk5SOU4vUVExNksxbFhsNFZGeWhtR1hEVDVLZGZjcjBSdklJVnJOeEYKaDRscUh0UlJDUDZSQlJzdHFiWjJ6VVJncWFrbi9YaXAwaWFRTDBJZGZIQlpyMzk2Rmdrbm5pUllGY2tLT1JQRwp5TTNRS25kNjZndE1zdDhJNW5rUlFsQWcvSmIrR2MzZWdJdnVHS1dib0UxRzg5TlRzTjlMVEREM1BMajBkVU1yCk9JdXFWakxCOHBFQzZ5azllbnJscnFqWFFna0xFWWhYenE3ZExhZnY1VmtpZzZHbDBudXVxanFmcDBRMWJpMW8KeVZOQWxYZTZhVVh3OTJDY2doQzliTnNLRU8xK001MllZNStvZklYbFMvU0VRYnZWWVlCTFo1eWVpZ2xWNnQzUwpNNkgrdlRHMGFQOVlIekxuL0tWT0h6R1FmWERQN3FNNXRrZis3ZGlaZTdvMmZ3Nk83SXZONmZzUVhFUVFqOFRKClVYSnh2Mi91SmhjdXkvdFNEZ1h3SE04VWszNFdOYlJUN3pHVEdrUVJYMGdzYmpBZWEvallBb1d2MFp2UVJ3cHEKUGU3OUQvaTdDZXA4cVduQSs3QUUvM0IzUy8zZEVFWW1jMGxwZTEzNjZBLzZHRWdrM2t0cjlQRW9RckxDaHM2SQp0dTN3bk5MQjJldUM4SUtHTFFGcEd0T08vMi9oaUFLanlhamFCUDI1dzFqRjBXbDhCYnFuZTN1WjJxMUd5UEZKCllSbVQ3L09YcG1PSC9GVkx0d1MrOG5nMWNBbXBDdWpQd3RlSlpOY0RHMHNGMm4vc2MwK1NRZjQ5ZmR5VUswdHkKK1ZVd0ZqOXRtV3h5Ui9NPQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCg=='
-_EMBEDDED_KEY_B64 = 'LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JR0hBZ0VBTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEJHMHdhd0lCQVFRZzFsU1V0bURxci9UbnhkZ3QKT3dnTDVnaTZYZ1Z0N05hUzJXdDZNZEREaGF1aFJBTkNBQVIvbE5tQUo2NW9teW90NkN4eDEzdFZsOTZjUm1HUApHdGlUbVlzZTJCRE9jT2VsTWZublFzRnJoUmZHb2l3VmVwanJ5V01rTi9ORnRjNmhYalpJd3Z1bgotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg=='
+_EMBEDDED_CERT_B64 = 'LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURrRENDQXhhZ0F3SUJBZ0lTQllRZHBxRmdEaURrUXMvK1licXhpQWkyTUFvR0NDcUdTTTQ5QkFNRE1ETXgKQ3pBSkJnTlZCQVlUQWxWVE1SWXdGQVlEVlFRS0V3MU1aWFFuY3lCRmJtTnllWEIwTVF3d0NnWURWUVFERXdOWgpSVEl3SGhjTk1qWXdPREkyTVRJME1qSTFXaGNOTWpZeE1USTBNVEkwTWpJMFdqQWNNUm93R0FZRFZRUURFeEZzCmIyTmhiQzV5WldSc2FXNXJjeTVtY2pCWk1CTUdCeXFHU000OUFnRUdDQ3FHU000OUF3RUhBMElBQkNiSGJqQXkKZXkvWS8xa3pxZlU3enBSUDBjVk1QejZLeUxxSGNscEpOVUtsanJaRExKeXhRWVBVSVpvQ0dOSXpoOUdaeEVvQQpISzcxazVJTEhXZzR1QitqZ2dJZk1JSUNHekFPQmdOVkhROEJBZjhFQkFNQ0I0QXdFd1lEVlIwbEJBd3dDZ1lJCkt3WUJCUVVIQXdFd0RBWURWUjBUQVFIL0JBSXdBREFkQmdOVkhRNEVGZ1FVVFlyc240WjhmYUZGcFdNODMra0cKOUt6eHJONHdId1lEVlIwakJCZ3dGb0FVdVZueWpzOGk4SWJUTjBqL2RoUVl1b0xZVlljd013WUlLd1lCQlFVSApBUUVFSnpBbE1DTUdDQ3NHQVFVRkJ6QUNoaGRvZEhSd09pOHZlV1V5TG1rdWJHVnVZM0l1YjNKbkx6QWNCZ05WCkhSRUVGVEFUZ2hGc2IyTmhiQzV5WldSc2FXNXJjeTVtY2pBVEJnTlZIU0FFRERBS01BZ0dCbWVCREFFQ0FUQXUKQmdOVkhSOEVKekFsTUNPZ0lhQWZoaDFvZEhSd09pOHZlV1V5TG1NdWJHVnVZM0l1YjNKbkx6VTFMbU55YkRDQwpBUXdHQ2lzR0FRUUIxbmtDQkFJRWdmMEVnZm9BK0FCMUFNczQ5eFdKZklTaFJGOWJ3ZDM3eVc3eW1sbk5Sd3BwCkJZV3d5eFRERkZqbkFBQUJvRDVOWitrQUFBUURBRVl3UkFJZ0hZblZCZWMwWm5GbXJpOENlMmlxdzBNdFdSamEKS2h6eXF0VThlelpEclhvQ0lBeFFJaktLSUNCd1FoMGc1c3Z5Q3VwVUpNTHBUclVjMCtWTVVQRGp4akp1QUg4QQpKdU5rYmxocElTTzhORDlISkRXYk41TE5KRnFJMkJYVGt6UDltUmlyUnlNQUFBR2dQazFodXdBSUFBQUZBRGxlCjVRd0VBd0JJTUVZQ0lRREJXVGJ5ZjAwQm5LWStsSUVRa3k0VHUxQjZzaGdaQjZwazNPNFA5VDlpRlFJaEFOUEoKTjhhK0dpT0pneWh2aDgrVk1HQkdwdHJKOXV4VEt6bHlEeXdRWDhMME1Bb0dDQ3FHU000OUJBTURBMmdBTUdVQwpNUURCTFFEN2R3dXQzK2lJaDRQTnViTkovNnBmMUpqL3UxS2VFblVHa2Q0L0ZrQ082alpLZjBFc2ZnMnhCdnNiCjA4c0NNQjd2R28xZW1NS0xWcVFDU3FORXN1QjJWdHpkOGxMSURQTEFYWDlxZnpMTTErSUpTMXFKTVBOVXQ3YUcKSmZkekdnPT0KLS0tLS1FTkQgQ0VSVElGSUNBVEUtLS0tLQotLS0tLUJFR0lOIENFUlRJRklDQVRFLS0tLS0KTUlJQ2pEQ0NBaEdnQXdJQkFnSVFUZk94WGRiQWVFeFFmTk43V09ieEZUQUtCZ2dxaGtqT1BRUURBekF1TVFzdwpDUVlEVlFRR0V3SlZVekVOTUFzR0ExVUVDaE1FU1ZOU1J6RVFNQTRHQTFVRUF4TUhVbTl2ZENCWlJUQWVGdzB5Ck5UQTVNRE13TURBd01EQmFGdzB5T0RBNU1ESXlNelU1TlRsYU1ETXhDekFKQmdOVkJBWVRBbFZUTVJZd0ZBWUQKVlFRS0V3MU1aWFFuY3lCRmJtTnllWEIwTVF3d0NnWURWUVFERXdOWlJUSXdkakFRQmdjcWhrak9QUUlCQmdVcgpnUVFBSWdOaUFBUnhtclF6a2RiRUVMM01xWHQzZEpRdHRZYzQ3YXhrZERUSHVkNVRQcU0yejV1U0Q1Y21rMFdyCkhsV1h2bmx2cUJMcWlCMzRrbHV4SWJtTXlBaXEzL1lENmU4MC92VjI1OUs4WFFJZGpGWGxvWU9hMG1JVTcxZjcKSFEwOVB2WURsdytqZ2U0d2dlc3dEZ1lEVlIwUEFRSC9CQVFEQWdHR01CTUdBMVVkSlFRTU1Bb0dDQ3NHQVFVRgpCd01CTUJJR0ExVWRFd0VCL3dRSU1BWUJBZjhDQVFBd0hRWURWUjBPQkJZRUZMbFo4bzdQSXZDRzB6ZEkvM1lVCkdMcUMyRldITUI4R0ExVWRJd1FZTUJhQUZLUElKbHFPb1V6UU5XUDhteVBJT3E1VzgwOVdNRElHQ0NzR0FRVUYKQndFQkJDWXdKREFpQmdnckJnRUZCUWN3QW9ZV2FIUjBjRG92TDNsbExta3ViR1Z1WTNJdWIzSm5MekFUQmdOVgpIU0FFRERBS01BZ0dCbWVCREFFQ0FUQW5CZ05WSFI4RUlEQWVNQnlnR3FBWWhoWm9kSFJ3T2k4dmVXVXVZeTVzClpXNWpjaTV2Y21jdk1Bb0dDQ3FHU000OUJBTURBMmtBTUdZQ01RREljbnc1ZGNaTE45ZmZ5blhubmtMRC9pdFMKSkV5Y0pQYjNzUmt6ZXFCb3d1cDd2T3NBd2Fxb0NuTm4vamg5d3ljQ01RQ0pNNkNQbGFPQzRwUVlZYkp0VlBZYgpES3JJYjJFS2s1TnBPcEU2L1h0dFFZWlYvM2dpbEI5bCtDYy9ET1Z3bXlnPQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCi0tLS0tQkVHSU4gQ0VSVElGSUNBVEUtLS0tLQpNSUlDcGpDQ0FpdWdBd0lCQWdJUkFJY2haZncwdHVYN3FLM1ZzM0JmdFRvd0NnWUlLb1pJemowRUF3TXdUekVMCk1Ba0dBMVVFQmhNQ1ZWTXhLVEFuQmdOVkJBb1RJRWx1ZEdWeWJtVjBJRk5sWTNWeWFYUjVJRkpsYzJWaGNtTm8KSUVkeWIzVndNUlV3RXdZRFZRUURFd3hKVTFKSElGSnZiM1FnV0RJd0hoY05Nall3TlRFek1EQXdNREF3V2hjTgpNekl3T1RBeU1qTTFPVFU1V2pBdU1Rc3dDUVlEVlFRR0V3SlZVekVOTUFzR0ExVUVDaE1FU1ZOU1J6RVFNQTRHCkExVUVBeE1IVW05dmRDQlpSVEIyTUJBR0J5cUdTTTQ5QWdFR0JTdUJCQUFpQTJJQUJEd1MvNnZocmNWcWNiQm8KK3dnZEkzZnduOXg3RE5KSk9ZL2xUT3RpMHZrd3VSTjg3UmhFaFRIMTdFN1h5RmpXc1BZaElQdC93ek9xeFRkMgpiKzRaSk55OUlEMDRZeXdGOVU1emFzRFZ5R1NORXJWTnR6OHVTR2g1aXpXODdqNzdHYU9CNnpDQjZEQU9CZ05WCkhROEJBZjhFQkFNQ0FRWXdFd1lEVlIwbEJBd3dDZ1lJS3dZQkJRVUhBd0V3RHdZRFZSMFRBUUgvQkFVd0F3RUIKL3pBZEJnTlZIUTRFRmdRVW84Z21XbzZoVE5BMVkveWJJOGc2cmxielQxWXdId1lEVlIwakJCZ3dGb0FVZkVLVwpydDVMU0R2Nmt2aWVqTTl0aTZseU41VXdNZ1lJS3dZQkJRVUhBUUVFSmpBa01DSUdDQ3NHQVFVRkJ6QUNoaFpvCmRIUndPaTh2ZURJdWFTNXNaVzVqY2k1dmNtY3ZNQk1HQTFVZElBUU1NQW93Q0FZR1o0RU1BUUlCTUNjR0ExVWQKSHdRZ01CNHdIS0Fhb0JpR0ZtaDBkSEE2THk5NE1pNWpMbXhsYm1OeUxtOXlaeTh3Q2dZSUtvWkl6ajBFQXdNRAphUUF3WmdJeEFNVTE5V0N0bXhWTkQ4VUhCWlJvbWE0OVo3alBzNjREbWEwZVR1MU9DaFZiQi8ySjdHVjNudllLCkF4NTR1azFHOVFJeEFPMG1pTFZKdThQTE5pWFhYa2lFL2dzSzNDVFJURi9hZW80Yk1YNDJadzQwY3NSVTZBQzIKNmhTVzEvSVdhYXM2ZGc9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0tCi0tLS0tQkVHSU4gQ0VSVElGSUNBVEUtLS0tLQpNSUlFY0RDQ0FsaWdBd0lCQWdJUWJJOGR4eWZIRVg5N3I0VTZ5WUQ1elRBTkJna3Foa2lHOXcwQkFRc0ZBREJQCk1Rc3dDUVlEVlFRR0V3SlZVekVwTUNjR0ExVUVDaE1nU1c1MFpYSnVaWFFnVTJWamRYSnBkSGtnVW1WelpXRnkKWTJnZ1IzSnZkWEF4RlRBVEJnTlZCQU1UREVsVFVrY2dVbTl2ZENCWU1UQWVGdzB5TmpBMU1UTXdNREF3TURCYQpGdzB6TWpBNU1ESXlNelU1TlRsYU1FOHhDekFKQmdOVkJBWVRBbFZUTVNrd0p3WURWUVFLRXlCSmJuUmxjbTVsCmRDQlRaV04xY21sMGVTQlNaWE5sWVhKamFDQkhjbTkxY0RFVk1CTUdBMVVFQXhNTVNWTlNSeUJTYjI5MElGZ3kKTUhZd0VBWUhLb1pJemowQ0FRWUZLNEVFQUNJRFlnQUV6WnZWbjRDREN1d0pTdk1XU2o1Y3ozZXMzbWNGRFIwSAp0dHdXKzFxTEZOdmljV0RFdWtXVkVZbU82Z2JmOXlvV0hLUzV4Y1V5NEFQZ0hvSVlPSXZYUmRnS2FtN21BSGY3CkFsRjlJdGdLYnBwYmQ5L3cra0hzT2R4MXltZ0hEQi9xbzRIMU1JSHlNQTRHQTFVZER3RUIvd1FFQXdJQkJqQWQKQmdOVkhTVUVGakFVQmdnckJnRUZCUWNEQVFZSUt3WUJCUVVIQXdJd0R3WURWUjBUQVFIL0JBVXdBd0VCL3pBZApCZ05WSFE0RUZnUVVmRUtXcnQ1TFNEdjZrdmllak05dGk2bHlONVV3SHdZRFZSMGpCQmd3Rm9BVWViUlo1bnUyCjVlUUJjNEFJaU1nYVdQYnBtMjR3TWdZSUt3WUJCUVVIQVFFRUpqQWtNQ0lHQ0NzR0FRVUZCekFDaGhab2RIUncKT2k4dmVERXVhUzVzWlc1amNpNXZjbWN2TUJNR0ExVWRJQVFNTUFvd0NBWUdaNEVNQVFJQk1DY0dBMVVkSHdRZwpNQjR3SEtBYW9CaUdGbWgwZEhBNkx5OTRNUzVqTG14bGJtTnlMbTl5Wnk4d0RRWUpLb1pJaHZjTkFRRUxCUUFECmdnSUJBRDIvZTlmcm1NeE5wQ1YwM3FVSGVnZytNVjJ3ejk2NDRZb1hkcXRIOFJ5V1ljQk83eGZqakdFWGRVMWUKL28wT2tFRml5blVDT1NJay92TExvN3R0ejZDUEFlTmxXZkMwWE5rb0dlV2dLNmpqWHZvekJhR3VHSDVuMFVmbwpzaE1lV1R1VVJxTk41RzAwc1NYRFRCcnBwMittZ3ZkWlFqYjhLMTFUWU1BMjVRQStZSE5mYklFTDBCbmlBaEtTCjJnc25KalN6cmRaTEkrRVo3U0V5cWRSMnJramQxS3V0TERVK24zVEZ5eGpuaVpWR3VyNFlsaE1QM21ZL2RWOTUKSXJ1QWtrak9aaWVyNmhHQmRFZ1pYWHZhQ3o5dTlpVkVhZHNJRTc1cEFHTDhvSFY1dnhkQVJEaW90UnB1bDFJTgovVVp3ekFicmZVRmN3MUhrQWNZRC9tbFpmblEyaWVDRjJNUzdqM1ZodjdKUERLcDQ1Zm15a216WU5TcnVtUlcwCnVwRkZLREJPb0Y3aHNPYjdvTHlIUytVZnQ2ak9VZk9yb2dqOFlVeDM4aEtiMksyMHI0Mk9nc1NkRGR4ZGVZV2MKTVMzU2I2bXdKZVNaRVl4SjJnYVhuRFNQYUtoaHJOa1l3bGp5VlF5cjROcStNRUp5dFhOVG5IcWFBY3JOd1psVgpwY0pMMUtCbk1yTWpQN2VhbnZVd0wzRllqM2NGMTdqdGJvTHQ3Z0xvaTQrMnJXWkZ2bit3NTRqbWQvRkl1aGhaCmNFYVUvd3ZVNkJVTk10Y1ZxdVZHSHA3aXRRZUR0aDVqK1hMM2o0V0oyU0FCd3pVbDZPZVlkZ3BJdC9JVFphK3AKVFQwbVEvcjVYeUE0TUVBaWFibjdYSmp2Q0VSbEYyZGNuMndxSncrQ3JlVGtrUTJSCi0tLS0tRU5EIENFUlRJRklDQVRFLS0tLS0K'
+_EMBEDDED_KEY_B64 = 'LS0tLS1CRUdJTiBQUklWQVRFIEtFWS0tLS0tCk1JR0hBZ0VBTUJNR0J5cUdTTTQ5QWdFR0NDcUdTTTQ5QXdFSEJHMHdhd0lCQVFRZ0srUUREaGt1c2VVNXNqeGYKL3JqanYrTE5QTWJpUVpIVmVlOXRveGkrMFltaFJBTkNBQVFteDI0d01uc3YyUDlaTTZuMU84NlVUOUhGVEQ4Kwppc2k2aDNKYVNUVkNwWTYyUXl5Y3NVR0QxQ0dhQWhqU000ZlJtY1JLQUJ5dTlaT1NDeDFvT0xnZgotLS0tLUVORCBQUklWQVRFIEtFWS0tLS0tCg=='
 
 
 def _resolve_cert_paths():
@@ -2569,6 +2569,21 @@ def _con_orgs(api, token):
 
 # ── Le moteur : on ne fait que DEMANDER une trame ───────────────────────────
 
+# Profondeur de couleur négociée avec le terminal. Les images d'icônes portent
+# désormais leur RGB EXACT : un terminal truecolor l'affiche tel quel — identique au
+# Web, sans le banding de la palette 256. On ne DEMANDE truecolor que si le terminal
+# l'annonce (COLORTERM), sinon 256 couleurs, la valeur sûre partout. Le Minitel (vraie
+# console Linux + setfont) reste en 256 : le noyau ne rend pas le truecolor de toute façon.
+_CON_COLOR = "ansi256"
+_CON_IMG = False       # ce client sait-il décoder les images nn: (négocié au démarrage)
+
+def _con_color_depth(minitel):
+    if minitel:
+        return "ansi256"
+    if os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit"):
+        return "truecolor"
+    return "ansi256"
+
 def _con_frame(app_url, token, **q):
     # On n'envoie pas ce qu'on n'a pas. Sans ce filtre, `app=None` part sur le réseau
     # comme la chaîne "None" — et le moteur cherche consciencieusement une application
@@ -2583,6 +2598,14 @@ def _con_frame(app_url, token, **q):
         off = time.localtime().tm_gmtoff        # secondes à l'est de UTC (None si inconnu)
         if off is not None:
             q["tz"] = off // 60
+    # La profondeur de couleur voyage avec la trame : le moteur émet le RGB exact des
+    # images quand on demande truecolor (rendu Web), la palette 256 sinon.
+    if "color" not in q:
+        q["color"] = _CON_COLOR
+    # Capacité image : on n'annonce `img=1` que si ce client sait décoder les nn: hashes,
+    # pour que le serveur ne réserve d'espace-avatar que là où on saura le remplir.
+    if "img" not in q and _CON_IMG:
+        q["img"] = 1
     url = f"{app_url}/api/console/frame/?" + urllib.parse.urlencode(q)
     try:
         return _con_req(url, headers={"Authorization": f"Bearer {token}"})
@@ -2712,11 +2735,23 @@ def _con_pick(items, label, render):
     try:
         tty.setraw(fd)
         while True:
-            sys.stdout.write("\x1b[2J\x1b[H\x1b[1;36m" + label + "\x1b[0m\r\n\r\n")
+            # Largeur réelle : sur un Minitel (40 col) une ligne figée à 50 débordait et
+            # partait à la ligne. On coupe au gabarit, et la barre de sélection couvre la
+            # rangée entière (padding sur la ligne active seulement).
+            try:
+                w = os.get_terminal_size().columns
+            except OSError:
+                w = 80
+            inner = max(4, w - 3)
+            sys.stdout.write("\x1b[2J\x1b[H\x1b[1;36m" + label[:w] + "\x1b[0m\r\n\r\n")
             for k, it in enumerate(items):
-                mark = "\x1b[7m" if k == i else ""
-                sys.stdout.write(f"  {mark}{render(it):<50}\x1b[0m\r\n")
-            sys.stdout.write("\r\n\x1b[2m↑ ↓ pour choisir · ↵ valider · q quitter\x1b[0m\r\n")
+                sel = k == i
+                line = render(it)[:inner]
+                if sel:
+                    line = line.ljust(inner)
+                mark = "\x1b[7m" if sel else ""
+                sys.stdout.write(f"  {mark}{line}\x1b[0m\r\n")
+            sys.stdout.write("\r\n\x1b[2m↑ ↓ choisir · ↵ valider · Échap retour · q quitter\x1b[0m\r\n")
             sys.stdout.flush()
             k = _con_read_key(fd)
             if k == "up":
@@ -2725,46 +2760,59 @@ def _con_pick(items, label, render):
                 i = (i + 1) % len(items)
             elif k == "enter":
                 return items[i]
-            elif k in ("quit", "back"):
-                return None
+            elif k == "quit":
+                return "quit"       # sortie franche, distincte du Retour
+            elif k == "back":
+                return None         # Retour : l'appelant remonte d'un cran
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
-def _con_home_accessible(app_url, token, role, lang):
-    """Le DASHBOARD en liste numérotée : toutes les apps de toutes les orgs, comme le
-    web. Renvoie (app_id, org_oid) de l'app choisie — l'org voyage dans l'action de
-    la tuile, jamais inventée par le client. Plus d'écran « choisir l'organisation »."""
-    q = dict(role=role, lang=lang, a11y=1)
+def _con_pick_frame_accessible(app_url, token, role, lang, **extra):
+    """Un écran de CHOIX en liste numérotée : le dashboard (toutes les apps de toutes
+    les orgs), ou le choix d'org d'une app fournie par plusieurs. Le texte a11y donne
+    les numéros à l'humain ; la trame JSON dit où chaque numéro mène. Le client ne fait
+    jamais la correspondance de tête — il la lit. Renvoie l'action choisie (un dict, avec
+    `to` et parfois `org`), ou None."""
+    q = dict(role=role, lang=lang, a11y=1, **extra)
     url = f"{app_url}/api/console/frame/?" + urllib.parse.urlencode(q)
     try:
         txt = _con_req(url, headers={"Authorization": f"Bearer {token}"}, raw=True).decode()
     except urllib.error.HTTPError as e:
         print(json.loads(e.read() or b"{}").get("error", f"Erreur HTTP {e.code}"))
-        return (None, None)
+        return None
     print()
     print(txt)
 
     # Il faut aussi la trame JSON : le texte donne les numéros à un humain, mais c'est
     # la trame qui dit à quelle APPLI (et dans quelle ORG) chaque numéro mène. Le
     # client n'invente jamais cette correspondance — il la lit.
-    f = _con_frame(app_url, token, role=role, lang=lang)
+    f = _con_frame(app_url, token, role=role, lang=lang, **extra)
     foc = f.get("focusables", [])
     try:
         n = input("> ").strip()
     except (EOFError, KeyboardInterrupt):
-        return (None, None)
+        return None
     if not n.isdigit() or not (1 <= int(n) <= len(foc)):
-        return (None, None)
-    act = foc[int(n) - 1].get("action") or {}
+        return None
+    return foc[int(n) - 1].get("action") or {}
+
+
+def _con_home_accessible(app_url, token, role, lang):
+    """Le DASHBOARD en liste numérotée : toutes les apps de toutes les orgs, comme le
+    web. Renvoie (app_id, org_oid) de l'app choisie — l'org voyage dans l'action de
+    la tuile (nulle si plusieurs orgs la fournissent : on la demande alors après le
+    clic). Plus d'écran « choisir l'organisation » avant même de voir les apps."""
+    act = _con_pick_frame_accessible(app_url, token, role, lang) or {}
     return (act.get("to"), act.get("org"))
 
 
 def _con_resolve_org(app_url, token, app):
-    """Trouve l'org qui fournit `app`, pour le raccourci `--app <id>` où il n'y a pas
-    de tuile pour porter l'org. On relit le dashboard (le moteur), on n'interroge
-    aucun endpoint que le client aurait à connaître — on cherche la tuile de `app` et
-    on prend l'org de son action. Première qui l'a."""
+    """L'org d'une app fournie par UNE SEULE org : sa tuile du dashboard la porte. On
+    relit le dashboard (le moteur), sans interroger aucun endpoint que le client aurait
+    à connaître — on cherche la tuile de `app` et on prend l'org de son action. Les
+    apps multi-org n'ont pas d'org sur leur tuile : celles-là passent par le choix (voir
+    _con_choose_org). Renvoie l'oid, ou None."""
     try:
         f = _con_frame(app_url, token, role="collaborator")
     except Exception:
@@ -2774,6 +2822,34 @@ def _con_resolve_org(app_url, token, app):
         if act.get("to") == app and act.get("org"):
             return act.get("org")
     return None
+
+
+def _con_choose_org(a, token, app, cols, rows, center=False):
+    """L'org de l'app, résolue APRÈS le clic — comme le web, et seulement si besoin.
+
+    On demande au moteur la trame de l'app SANS org, et il décide :
+      • une seule org la fournit → il l'adopte en silence et renvoie le SOMMAIRE (des
+        `slots`). Rien à demander ; on lit l'oid sur la tuile du dashboard (mono-org).
+      • plusieurs → il renvoie l'ÉCRAN DE CHOIX numéroté. On laisse l'utilisateur
+        choisir ; l'org voyage dans l'action de la ligne, jamais inventée par le client.
+
+    Renvoie l'oid choisi, ou None (annulé, ou app introuvable)."""
+    probe = _con_frame(a.app_url, token, app=app, role=a.role, lang=a.lang)
+    if "slots" in probe:
+        # Une seule org : le moteur l'a déjà adoptée. Son oid est sur la tuile.
+        return _con_resolve_org(a.app_url, token, app)
+    if "error" in probe and "focusables" not in probe:
+        print(probe["error"])
+        return None
+    # Plusieurs orgs → le moteur pose la question. On la laisse à l'utilisateur, dans
+    # le mode où il est : la même boucle de trame en visuel, la liste numérotée en a11y.
+    if a.accessible:
+        act = _con_pick_frame_accessible(a.app_url, token, a.role, a.lang, app=app)
+    else:
+        act = _con_run(a.app_url, token, app, None, a.role, None, cols, rows, a.lang, center)
+    # `_con_run` peut renvoyer "back"/"quit" (des chaînes) si l'utilisateur ressort du
+    # choix d'org : ce n'est pas une org, c'est une annulation.
+    return act.get("org") if isinstance(act, dict) else None
 
 
 # ── La boucle ───────────────────────────────────────────────────────────────
@@ -2818,12 +2894,18 @@ _LOGIN_L10N = {
            "user": "Nom d'utilisateur", "pw": "Mot de passe", "ph": "votre_pseudo",
            "envoi": "ENVOI", "submit": "se connecter",
            "noacc": "Pas de compte ? Inscription sur le web.",
-           "hint": "↵ valider  ·  ↑↓ champ  ·  Echap annuler"},
+           "hint": "↵ valider  ·  ↑↓ champ  ·  Echap annuler",
+           "f1": "F1 · accessibilité (voix, liste numérotée)",
+           "cont": "CONTINUER", "contsub": "session déjà ouverte",
+           "hint2": "↵ continuer  ·  Echap quitter"},
     "en": {"sub": "Multi-service management platform",
            "user": "Username", "pw": "Password", "ph": "your_username",
            "envoi": "ENTER", "submit": "sign in",
            "noacc": "No account? Register on the web.",
-           "hint": "↵ submit  ·  ↑↓ field  ·  Esc cancel"},
+           "hint": "↵ submit  ·  ↑↓ field  ·  Esc cancel",
+           "f1": "F1 · accessibility (speech, numbered list)",
+           "cont": "CONTINUE", "contsub": "session already open",
+           "hint2": "↵ continue  ·  Esc quit"},
 }
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
@@ -2866,26 +2948,29 @@ def _con_login_read(fd):
         return ("key", "skip")
 
 
-def _con_login_screen(a):
-    """L'écran de login à la marque RedStars — la réplique Vidéotex du login web.
+def _con_login_screen(a, logged_in=False):
+    """L'écran de marque RedStars — la réplique Vidéotex du login web, montré À CHAQUE
+    lancement, y compris quand la session est déjà ouverte.
 
-    Le login PRÉCÈDE l'authentification : il ne peut donc pas venir du moteur (la
-    trame exige déjà un jeton). Il est dessiné ici, une fois, tenant en 40 colonnes :
-    marque encadrée, deux champs, le mot de passe masqué au fur et à mesure. Le web
-    tapait le mot de passe dans un champ avec gestionnaire ; ici on rend au moins des
-    points qui avancent et un curseur, au lieu du noir muet de getpass.
+    Deux modes, même marque :
+      • login (pas de session) : deux champs, le mot de passe masqué au fur et à mesure.
+        Renvoie (utilisateur, mot_de_passe).
+      • `logged_in` (session déjà là) : PAS de champs, juste un bouton « Continuer ».
+        Renvoie "continue" (on entre) ou "quit" (Echap).
 
-    Renvoie (utilisateur, mot_de_passe), ou None quand ce n'est pas un vrai terminal
-    (pipe, cron), en mode accessible, ou si l'utilisateur annule — l'appelant retombe
-    alors sur la saisie ligne à ligne, qui reste la voie sûre pour un lecteur d'écran.
-    F1 y bascule l'accessibilité, comme partout ailleurs."""
+    Dans les deux cas la mention F1 (accessibilité) est ICI — il n'y a plus d'écran
+    d'accueil séparé. F1 bascule le mode accessible et poursuit.
+
+    Renvoie None (mode login) quand ce n'est pas un vrai terminal (pipe, cron) ou en mode
+    accessible : l'appelant retombe alors sur la saisie ligne à ligne, sûre pour un
+    lecteur d'écran. En `logged_in`, ces mêmes cas renvoient "continue" (rien à saisir)."""
     if a.accessible:
-        return None                            # lecteur d'écran : pas de formulaire spatial
+        return "continue" if logged_in else None   # lecteur d'écran : pas d'écran spatial
     fd = sys.stdin.fileno()
     try:
         old = termios.tcgetattr(fd)
     except (termios.error, ValueError):
-        return None                            # pas un tty : saisie ligne à ligne
+        return "continue" if logged_in else None    # pas un tty
     tr = _LOGIN_L10N.get(a.lang, _LOGIN_L10N["fr"])
     try:
         tcols = os.get_terminal_size().columns
@@ -2921,24 +3006,42 @@ def _con_login_screen(a):
         return frame_row("[" + shown.ljust(fw) + "]", C_ACT if idx == cur else C_DIM)
 
     def screen():
-        return [
+        head = [
             "",
             center(f"{C_STAR}★{R}  {C_BRAND}R E D S T A R S{R}  {C_STAR}★{R}"),
             center(f"{C_DIM}{tr['sub']}{R}"),
             "",
-            center(f"{C_FRAME}┌{'─' * IW}┐{R}"),
-            frame_row(tr["user"], C_ACT if cur == 0 else C_DIM),
-            frame_field(0, False, tr["ph"]),
-            frame_row(""),
-            frame_row(tr["pw"], C_ACT if cur == 1 else C_DIM),
-            frame_field(1, True),
-            center(f"{C_FRAME}└{'─' * IW}┘{R}"),
-            "",
-            center(f"{C_OK}{tr['envoi']}{R} {C_DIM}{tr['submit']}{R}"),
-            center(f"{C_DIM}{tr['noacc']}{R}"),
-            "",
-            center(f"{C_DIM}{tr['hint']}{R}"),
         ]
+        if logged_in:
+            # Déjà connecté : pas de champs, un bouton « Continuer » en vidéo inverse.
+            body = [
+                "",
+                center(f"{C_OK}\x1b[7m  ▶  {tr['cont']}  {R}"),
+                "",
+                center(f"{C_DIM}{tr['contsub']}{R}"),
+                "",
+                center(f"{C_OK}{tr['envoi']}{R} {C_DIM}{tr['cont'].lower()}{R}"),
+            ]
+        else:
+            body = [
+                center(f"{C_FRAME}┌{'─' * IW}┐{R}"),
+                frame_row(tr["user"], C_ACT if cur == 0 else C_DIM),
+                frame_field(0, False, tr["ph"]),
+                frame_row(""),
+                frame_row(tr["pw"], C_ACT if cur == 1 else C_DIM),
+                frame_field(1, True),
+                center(f"{C_FRAME}└{'─' * IW}┘{R}"),
+                "",
+                center(f"{C_OK}{tr['envoi']}{R} {C_DIM}{tr['submit']}{R}"),
+                center(f"{C_DIM}{tr['noacc']}{R}"),
+            ]
+        # La mention F1 vit ICI, sur l'écran de marque — plus d'écran d'accueil séparé.
+        foot = [
+            "",
+            center(f"{C_STAR}{tr['f1']}{R}"),
+            center(f"{C_DIM}{tr['hint2'] if logged_in else tr['hint']}{R}"),
+        ]
+        return head + body + foot
 
     try:
         tty.setraw(fd)
@@ -2946,6 +3049,16 @@ def _con_login_screen(a):
             sys.stdout.write("\x1b[?25l\x1b[2J\x1b[H" + "\r\n".join(screen()) + "\r\n")
             sys.stdout.flush()
             kind, v = _con_login_read(fd)
+            if v == "a11y":                         # F1 : bascule accessibilité, ici même
+                a.accessible = True
+                return "continue" if logged_in else None
+            if logged_in:
+                # Un seul choix : continuer (↵ / une touche) ou quitter (Echap).
+                if v == "enter" or kind == "char":
+                    return "continue"
+                if v in ("esc", "quit"):
+                    return "quit"
+                continue                            # autre contrôle : on reste
             if kind == "char":
                 fields[cur] += v
             elif v == "back":
@@ -2954,9 +3067,6 @@ def _con_login_screen(a):
                 cur = 1 - cur
             elif v == "up":
                 cur = 0
-            elif v == "a11y":                   # F1 : bascule accessibilité, comme au welcome
-                a.accessible = True
-                return None
             elif v == "enter":
                 if cur == 0:
                     cur = 1                      # ENVOI depuis l'identifiant → passe au mot de passe
@@ -2973,7 +3083,8 @@ def _con_login_screen(a):
         sys.stdout.flush()
 
 
-def _con_run(app_url, token, app, org, role, slot, cols, rows, lang):
+def _con_run(app_url, token, app, org, role, slot, cols, rows, lang, center=False,
+             modal=None, item=None, src=None):
     # On suit le NUMÉRO du focusable, pas sa ligne.
     #
     # Une ligne pouvait porter une seule chose à sélectionner — jusqu'à l'accueil, où
@@ -2993,16 +3104,24 @@ def _con_run(app_url, token, app, org, role, slot, cols, rows, lang):
             # fenêtre. Le client n'a pas d'état de défilement à tenir — et donc pas
             # d'occasion de le désynchroniser.
             f = _con_frame(app_url, token, app=app, org=org, role=role, slot=slot,
+                      modal=modal, item=item, src=src,
                       sel=sel, cols=cols, rows=rows, lang=lang)
             if "error" in f:
                 sys.stdout.write("\x1b[2J\x1b[H\x1b[31m" + f["error"].replace("\n", "\r\n") + "\x1b[0m\r\n\r\n")
                 sys.stdout.write("\x1b[2mUne touche pour revenir…\x1b[0m")
                 sys.stdout.flush()
                 os.read(fd, 1)
-                return
+                return "back"
 
-            # Le serveur a déjà tout composé. On imprime.
-            sys.stdout.write(f["ansi"].replace("\n", "\r\n"))
+            # Le serveur a déjà tout composé. On imprime — centré en mode Minitel, où le
+            # cadre 40×24 flotte dans une console plus large que lui.
+            sys.stdout.write(_con_center(f["ansi"], cols, rows) if center
+                             else f["ansi"].replace("\n", "\r\n"))
+            # Les images du réseau de rendu (avatars, vignettes) sont posées PAR-DESSUS la
+            # trame : décodées et rendues en local (le décodeur nn: n'existe pas côté serveur).
+            if f.get("images"):
+                t, l = _con_offset(cols, rows, center)
+                _con_blit_images(f["images"], t, l)
             sys.stdout.flush()
 
             k = _con_read_key(fd)
@@ -3027,18 +3146,49 @@ def _con_run(app_url, token, app, org, role, slot, cols, rows, lang):
                 # ne sait pas ce qu'est une application ; il sait suivre une route.
                 if 0 <= here < len(foc):
                     act = foc[here].get("action") or {}
-                    if act.get("kind") == "route":
+                    kind = act.get("kind")
+                    if kind == "route":
                         return act
-                    sys.stdout.write("\r\n\x1b[33m→ " + json.dumps(act, ensure_ascii=False) + "\x1b[0m\r\n")
-                    sys.stdout.write("\x1b[2m(le rendu des modales n'est pas encore écrit — une touche)\x1b[0m")
-                    sys.stdout.flush()
-                    os.read(fd, 1)
-            elif k in ("quit", "back"):
-                return None
+                    if kind == "open-modal":
+                        # Descendre d'un cran : le DÉTAIL plein écran (fiche membre, détail
+                        # de ligne). La modale est une trame comme une autre — le moteur rend
+                        # le composant de l'app. Retour y revient à la liste ; Quitter sort.
+                        sub = _con_run(app_url, token, app, org, role, None, cols, rows, lang,
+                                       center, modal=act.get("modal"), item=act.get("itemId"),
+                                       src=slot)
+                        if sub == "quit":
+                            return "quit"
+                        # "back"/None → on reste dans la liste (la boucle la redessine)
+                    # kind == "none"/inconnu : rien à ouvrir, on ignore l'Entrée
+            elif k == "back":
+                # Retour = remonter d'UN cran (slot → sommaire), pas quitter. C'est
+                # l'appelant qui décide où mène ce cran ; ici on dit seulement « en haut ».
+                return "back"
+            elif k == "quit":
+                return "quit"
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
         sys.stdout.write("\x1b[2J\x1b[H")
         sys.stdout.flush()
+
+
+def _con_modal_accessible(app_url, token, app, org, role, modal, item, src, lang):
+    """Le DÉTAIL (fiche membre, détail de ligne) en texte pur, pour lecteur d'écran.
+    Le moteur rend le composant de l'app ; on n'écrit aucune vue de plus."""
+    q = {k: v for k, v in dict(app=app, org=org, role=role, modal=modal, item=item,
+                               src=src, lang=lang, a11y=1).items() if v is not None}
+    url = f"{app_url}/api/console/frame/?" + urllib.parse.urlencode(q)
+    try:
+        txt = _con_req(url, headers={"Authorization": f"Bearer {token}"}, raw=True).decode()
+    except urllib.error.HTTPError as e:
+        print(json.loads(e.read() or b"{}").get("error", f"Erreur HTTP {e.code}"))
+        return
+    print()
+    print(txt)
+    try:
+        input("\n(Entrée pour revenir) ")
+    except (EOFError, KeyboardInterrupt):
+        pass
 
 
 def _con_run_accessible(app_url, token, app, org, role, slot, lang):
@@ -3084,8 +3234,14 @@ def _con_run_accessible(app_url, token, app, org, role, slot, lang):
             if not hit:
                 print(f"Il n'y a pas d'élément numéro {answer}.")
                 continue
+            act = hit.get("action") or {}
+            if act.get("kind") == "open-modal":
+                # Le détail, plein texte — on descend d'un cran, comme le web.
+                _con_modal_accessible(app_url, token, app, org, role, act.get("modal"),
+                                      act.get("itemId"), slot, lang)
+                continue
             print(f"\n{hit['speech']}")
-            print("(l'ouverture du détail n'est pas encore écrite)")
+            print("(pas d'action disponible ici)")
             continue
         print("Tapez un numéro, ou 0 pour revenir.")
 
@@ -3239,6 +3395,172 @@ def _con_spawn_terminal(token, opts):
     return None
 
 
+def _con_bigfont_setup():
+    """Sur une VRAIE console Linux (TERM=linux), agrandit la police pour un rendu
+    proche du Minitel — de gros caractères qui remplissent l'écran. Sauve la police
+    courante et renvoie une fonction de restauration (à appeler en sortie), ou None si
+    on n'est pas sur une console texte, si `setfont` manque, ou si aucune grosse police
+    n'a pris.
+
+    Pourquoi setfont, et pas une séquence d'échappement : la console Linux n'a AUCUNE
+    commande in-band pour la police. Elle ignore aussi le double-hauteur VT100
+    (`ESC # 3/4`) et le resize XTWINOPS (`ESC [ 8 t`) — donc les astuces des émulateurs
+    ne servent à rien ici. La taille des glyphes s'y change avec `setfont`, point.
+
+    On agrandit surtout la HAUTEUR (police 32 px de haut) : le nombre de colonnes vaut
+    largeur_écran ÷ largeur_police, or les polices console plafonnent à ~16 px de large
+    — viser 40 colonnes pile demanderait en plus une résolution basse (root/boot). Une
+    police 16×32 donne déjà ~24 lignes plein écran, la bonne proportion, et le cadre est
+    centré dans les colonnes restantes (voir _con_center)."""
+    import shutil
+    import subprocess
+    import tempfile
+    if os.environ.get("TERM") != "linux" or not sys.stdout.isatty():
+        return None
+    if not shutil.which("setfont"):
+        return None
+    old = os.path.join(tempfile.gettempdir(), f"redstars-oldfont-{os.getpid()}.psf")
+    # De la plus grande à la plus petite, en couvrant les noms usuels selon la distrib
+    # (kbd, console-setup, terminus). `-o old` sauve la police courante AVANT de charger
+    # la nouvelle : dès qu'un chargement réussit, `old` contient bien la police d'origine
+    # (les essais ratés n'ont rien changé). On garde la première que setfont accepte.
+    for font in ("ter-v32b", "latarcyrheb-sun32", "Uni3-TerminusBold32x16",
+                 "Lat15-Terminus32x16", "Lat2-Terminus32x16", "Uni2-Terminus32x16",
+                 "sun12x22", "ter-v24b", "ter-v22b"):
+        try:
+            r = subprocess.run(["setfont", "-o", old, font],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            return None
+        if r.returncode == 0:
+            def restore(_old=old):
+                try:
+                    subprocess.run(["setfont", _old],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+                try:
+                    os.unlink(_old)
+                except OSError:
+                    pass
+            return restore
+    return None
+
+
+def _con_center(ansi, cols, rows):
+    """Centre le cadre du serveur dans le terminal réel — pour le mode Minitel, où le
+    contenu fait 40×24 mais la console (surtout après un gros setfont) reste plus large.
+
+    La trame ANSI est orientée LIGNES : un effacement + « home » en tête, puis des lignes
+    jointes par CRLF, sans positionnement absolu par ligne. On retire l'effacement/home,
+    on découpe, et on ré-émet chaque ligne à une position absolue (row, col) pour poser
+    le bloc 40×24 au centre. La taille réelle est relue À CHAQUE trame : setfont a pu
+    changer la géométrie de la console entre-temps."""
+    try:
+        sz = os.get_terminal_size()
+        rc, rr = sz.columns, sz.lines
+    except OSError:
+        rc, rr = cols, rows
+    left = max(0, (rc - cols) // 2)
+    top = max(0, (rr - rows) // 2)
+    body = ansi.replace("\x1b[2J", "").replace("\x1b[H", "")
+    out = ["\x1b[2J"]
+    for i, ln in enumerate(body.split("\n")):
+        out.append(f"\x1b[{top + i + 1};{left + 1}H" + ln.rstrip("\r"))
+    return "".join(out)
+
+
+def _con_offset(cols, rows, center):
+    """Coin haut-gauche du cadre dans le terminal réel : (0,0) en mode normal (la trame
+    commence à « home »), centré en mode Minitel — la même arithmétique que _con_center."""
+    if not center:
+        return 0, 0
+    try:
+        sz = os.get_terminal_size()
+        rc, rr = sz.columns, sz.lines
+    except OSError:
+        rc, rr = cols, rows
+    return max(0, (rr - rows) // 2), max(0, (rc - cols) // 2)
+
+
+# img_render (décodeur nn: + rendu quadrant) vit CÔTÉ BUNDLE TAURI, pas dans helper.py :
+# numpy/onnxruntime + le modèle 3,7 Mo y sont, pour que helper.py (signé, auto-updaté seul
+# dans le cache OS) reste léger. On le découvre dans le bundle exactement comme les codecs —
+# helper.py auto-updaté n'a PAS img_render.py à côté de lui, il faut aller le chercher.
+_IMG = {'mod': None, 'tried': False}
+
+def _img_dirs():
+    import glob as _glob
+    cands = [DEMO_DIR]
+    env = os.environ.get('REDSTARS_HELPER_BUNDLED_DIR')
+    if env:
+        cands.append(Path(env))
+    for pat in (
+        '/usr/lib/*/bundled/img_render.py', '/usr/lib/*/resources/bundled/img_render.py',
+        '/usr/share/*/bundled/img_render.py', '/opt/*/bundled/img_render.py',
+        '/tmp/.mount_*/usr/lib/*/bundled/img_render.py',
+        '/Applications/*.app/Contents/Resources/bundled/img_render.py',
+        str(Path.home() / 'Applications' / '*.app' / 'Contents' / 'Resources' / 'bundled' / 'img_render.py'),
+    ):
+        for hit in _glob.glob(pat):
+            cands.append(Path(hit).parent)
+    return cands
+
+def _img_mod():
+    """Charge paresseusement img_render depuis le bundle Tauri. None si absent (numpy/onnx
+    ou modèle manquants) → le repli texte du serveur reste."""
+    if _IMG['tried']:
+        return _IMG['mod']
+    _IMG['tried'] = True
+    try:
+        import sys as _sys
+        for d in _img_dirs():
+            if (d / 'img_render.py').is_file():
+                if str(d) not in _sys.path:
+                    _sys.path.insert(0, str(d))
+                break
+        import img_render
+        _IMG['mod'] = img_render
+    except Exception:
+        _IMG['mod'] = None
+    return _IMG['mod']
+
+def _con_img_capable():
+    m = _img_mod()
+    try:
+        return bool(m and m.capable())
+    except Exception:
+        return False
+
+
+def _con_blit_images(images, top, left):
+    """Poser les images du RÉSEAU DE RENDU (avatars, vignettes) par-dessus la trame.
+
+    Le serveur ne peut pas les rendre : le décodeur `nn:` ne tourne pas côté serveur. Il
+    marque donc juste OÙ et QUEL hash — `images: [{hash, row, col, w, h}]`, coordonnées en
+    cellules dans le cadre. Ici, sur la machine de l'utilisateur, on décode le hash en local
+    (img_render + modèle bundlé), on rend la tuile en texte quadrant — le MÊME moteur que le
+    Web — et on la blitte à sa position. Sans décodeur (modèle/onnxruntime absents), on ne
+    touche à rien : le repli texte que le serveur a déjà dessiné (initiales/glyphe) reste."""
+    img = _img_mod()
+    if img is None:
+        return
+    for im in images or []:
+        h = im.get("hash")
+        wc, hc = int(im.get("w", 0)), int(im.get("h", 0))
+        row, col = int(im.get("row", 0)), int(im.get("col", 0))
+        if not h or wc <= 0 or hc <= 0:
+            continue
+        try:
+            lines = img.render_tile(h, wc, hc)
+        except Exception:
+            lines = None
+        if not lines:
+            continue
+        for ri, ln in enumerate(lines):
+            sys.stdout.write(f"\x1b[{top + row + ri + 1};{left + col + 1}H" + ln)
+
+
 def run_console(argv):
     ap = argparse.ArgumentParser(prog="helper.py console", description="RedStars en console")
     ap.add_argument("--app-url", default=os.environ.get("REDSTARS_APP_URL", DEFAULT_APP_URL))
@@ -3270,19 +3592,37 @@ def run_console(argv):
     tc, tr = term_size()
     cols, rows = (40, 24) if a.minitel else (a.cols or tc, a.rows or tr)
 
-    # Mode Minitel : donner à la FENÊTRE la forme d'un Minitel, 40×24. La séquence
-    # DECSLPP/XTWINOPS `ESC [ 8 ; rows ; cols t` demande au terminal de se
-    # redimensionner ; xterm/kitty/gnome-terminal l'honorent, les autres l'ignorent
-    # (inoffensif). On restaure la taille d'origine à la sortie — y compris sur
-    # sys.exit — via atexit, pour ne pas laisser la fenêtre de l'utilisateur rétrécie.
-    # (Ça change la forme, pas la POLICE : agrandir les caractères est le rôle de
-    # l'émulateur, pas d'un programme dans le terminal.)
+    # Négocier la profondeur de couleur une fois, ici : truecolor sur un émulateur qui
+    # l'annonce (icônes au rendu Web), 256 couleurs partout ailleurs et en Minitel.
+    global _CON_COLOR, _CON_IMG
+    _CON_COLOR = _con_color_depth(a.minitel)
+    # Capacité image : uniquement sur un terminal truecolor (une tuile d'avatar en
+    # mosaïque n'a pas de sens en Videotex/256) ET si le décodeur bundlé est là.
+    _CON_IMG = (not a.minitel) and _CON_COLOR == "truecolor" and _con_img_capable()
+
+    # Mode Minitel : donner à la FENÊTRE la forme d'un Minitel, 40×24, et remplir
+    # l'écran de gros caractères.
+    #
+    # Deux mondes, deux leviers :
+    #   • Un ÉMULATEUR (xterm, kitty, gnome-terminal…) honore le resize DECSLPP/XTWINOPS
+    #     `ESC [ 8 ; rows ; cols t` — la fenêtre prend la forme 40×24. Les autres
+    #     l'ignorent (inoffensif). La police, elle, reste l'affaire de l'émulateur.
+    #   • Une VRAIE console Linux ignore CE resize (et le double-hauteur VT100) : là, on
+    #     agrandit la POLICE avec setfont, ce qu'un programme PEUT faire sur la console,
+    #     puis on centre le cadre 40×24 dans les colonnes restantes.
+    # On restaure taille et police d'origine à la sortie — y compris sur sys.exit — via
+    # atexit, pour ne pas laisser la fenêtre rétrécie ni la console en 32 px.
+    center = False
     if a.minitel and sys.stdout.isatty():
         sys.stdout.write("\x1b[8;24;40t")
         sys.stdout.flush()
         import atexit
         atexit.register(lambda oc=tc, orr=tr: (sys.stdout.write(f"\x1b[8;{orr};{oc}t"),
                                                sys.stdout.flush()))
+        restore_font = _con_bigfont_setup()
+        if restore_font:
+            atexit.register(restore_font)
+        center = True
 
     # Le navigateur a DÉJÀ authentifié l'utilisateur : il nous passe le jeton de
     # session, et on saute la saisie du mot de passe. Le jeton arrive par
@@ -3322,16 +3662,12 @@ def run_console(argv):
     # n'utilise pas la console. Elle ne doit se produire QU'UNE FOIS.
     if not token:
         token = _con_session_load(a.api_url) or ""
-        if token:
-            print("Session retrouvée — pas de mot de passe à ressaisir.\n")
 
-    if token:
-        pass
-    else:
+    if not token:
         # L'écran de login à la marque, dessiné ici parce qu'il précède l'auth (le
         # moteur exige déjà un jeton). On ne le montre que si RIEN n'est pré-fourni :
         # --user/--password sont là pour les scripts, et doivent court-circuiter la
-        # saisie interactive, pas la décorer.
+        # saisie interactive, pas la décorer. F1 y bascule l'accessibilité.
         creds = None
         if not (a.user or a.password):
             creds = _con_login_screen(a)
@@ -3349,81 +3685,119 @@ def run_console(argv):
             _con_session_save(token, d.get("refresh_token"), a.api_url)
         except urllib.error.HTTPError as e:
             sys.exit(f"Connexion refusée (HTTP {e.code}).")
-
-    # L'organisation, dessinée par le MOTEUR comme tout le reste.
-    #
-    # C'était le dernier écran que le client peignait lui-même : une liste texte,
-    # imprimée avant même de demander quoi que ce soit au moteur. Le premier écran
-    # après le mot de passe était donc le seul que personne n'avait dessiné.
-    # F1 au login = mode accessibilite. C'est une OPTION qu'on active, pas un flag.
-    if _con_welcome(a):
-        a.accessible = True
+    else:
+        # Session DÉJÀ ouverte : on montre quand même l'écran de marque — logo, cadre —
+        # mais avec un simple bouton « Continuer ». La mention F1 (accessibilité) est là
+        # aussi : c'est le seul écran d'accueil, il n'y en a plus de séparé.
+        if _con_login_screen(a, logged_in=True) == "quit":
+            return
 
     # PAS de choix d'organisation : le DASHBOARD, comme le web — l'union des apps de
     # toutes les orgs de l'utilisateur. On ne choisit pas une org, on choisit une APP,
     # et l'org qui la fournit voyage avec elle (dans l'action de la tuile). L'ancien
     # écran « choisir l'organisation » n'existe plus : le dashboard montre déjà toutes
     # les apps de toutes les orgs, exactement comme la version Web.
-    app = a.app
-    org_oid = None
-    if not app:
-        if a.accessible:
-            # Même document, autre sortie : le dashboard est déjà une liste numérotée
-            # en accessible — mais ça renvoie du TEXTE, pas du JSON, donc un chemin à part.
-            app, org_oid = _con_home_accessible(a.app_url, token, a.role, a.lang)
-        else:
-            act = _con_run(a.app_url, token, None, None, a.role, None, cols, rows, a.lang)
-            if not act:
-                return
-            app = act.get("to")
-            org_oid = act.get("org")
+    # Boucle de navigation : dashboard → app → sommaire → slot. « Retour » remonte d'UN
+    # SEUL cran (slot → sommaire → dashboard → sortie) au lieu de tout quitter d'un coup.
+    # C'est la remontée d'un Minitel (Sommaire/Retour) et du bouton Retour du web ; avant,
+    # le flux était linéaire et le moindre Retour déroulait tout jusqu'à la sortie.
+    pinned = bool(a.app)      # --app <id> : rien au-dessus de l'app, donc Retour = sortie
+    while True:
+        app = a.app
+        org_oid = None
         if not app:
-            return
-    if not org_oid:
-        # --app fourni en ligne de commande : pas de tuile pour porter l'org, on la
-        # résout via le dashboard (la première org qui fournit cette app).
-        org_oid = _con_resolve_org(a.app_url, token, app)
+            if a.accessible:
+                # Même document, autre sortie : le dashboard est déjà une liste numérotée
+                # en accessible — mais ça renvoie du TEXTE, pas du JSON, donc un chemin à part.
+                app, org_oid = _con_home_accessible(a.app_url, token, a.role, a.lang)
+            else:
+                act = _con_run(a.app_url, token, None, None, a.role, None, cols, rows, a.lang, center)
+                # Au dashboard (le sommet), Retour comme Quitter = sortie : rien au-dessus.
+                if not isinstance(act, dict):
+                    return
+                app = act.get("to")
+                org_oid = act.get("org")
+            if not app:
+                return
         if not org_oid:
-            sys.exit("Organisation introuvable pour cette application.")
-    org = {"oid": org_oid, "name": ""}
+            # L'org, SI BESOIN — après le clic, comme le web. Une tuile mono-org l'a déjà
+            # portée ; sinon (app multi-org, ou raccourci --app) le moteur tranche : il
+            # l'adopte s'il n'y a qu'une org, ou pose la question s'il y en a plusieurs.
+            org_oid = _con_choose_org(a, token, app, cols, rows, center)
+            if not org_oid:
+                # Choix d'org annulé (Retour) : on remonte au dashboard — ou on sort si
+                # l'app était épinglée en ligne de commande (rien au-dessus).
+                if pinned:
+                    return
+                continue
+        org = {"oid": org_oid, "name": ""}
 
-    # Le sommaire — et le recensement honnête : les slots `kind: null` sont du
-    # React sur mesure, sans forme console. On les affiche barrés plutôt que de
-    # les cacher : c'est une dette visible, pas un secret.
-    s = _con_frame(a.app_url, token, app=app, org=org["oid"], role=a.role)
-    if "error" in s:
-        sys.exit(s["error"])
-    slots = s["slots"]
+        # Le sommaire — et le recensement honnête : les slots `kind: null` sont du
+        # React sur mesure, sans forme console. On les affiche barrés plutôt que de
+        # les cacher : c'est une dette visible, pas un secret.
+        s = _con_frame(a.app_url, token, app=app, org=org["oid"], role=a.role)
+        if "error" in s:
+            sys.exit(s["error"])
 
-    if a.accessible:
-        # Le sommaire aussi est une liste numérotée. Les slots que la console ne
-        # sait PAS rendre (du React sur mesure : la carto d'eau, ses graphes) sont
-        # annoncés comme tels au lieu d'être cachés — une dette qu'on dit tout
-        # haut plutôt qu'un silence qui laisse croire que tout est là.
-        rendable = [x for x in slots if x["kind"]]
-        print(f"\n{app} version {s['version']}. Organisation {org['name']}.")
-        print(f"{len(rendable)} rubriques.\n")
-        for i, x in enumerate(rendable, 1):
-            print(f"{i}. {x['id']}")
-        muets = [x['id'] for x in slots if not x['kind']]
-        if muets:
-            print(f"\nNon disponibles en console : {', '.join(muets)}.")
-        print(f"\nTapez un numéro de 1 à {len(rendable)} puis Entrée. 0 pour quitter.")
-        try:
-            n = input("> ").strip()
-        except (EOFError, KeyboardInterrupt):
+        # Le MENU de l'app — CELUI DU WEB : les mêmes libellés localisés, icônes, ordre et
+        # groupe de pied (`views[role].menu`). Avant, la console listait les IDS de slots
+        # bruts ; maintenant elle affiche le vrai menu, identique à la version Web, sans une
+        # ligne de code par app. On retombe sur les slots si une vieille trame n'a pas `menu`.
+        menu = s.get("menu") or [
+            {"id": x["id"], "label": {"fr": x["id"], "en": x["id"]}, "kind": x.get("kind")}
+            for x in s.get("slots", [])
+        ]
+        # Les entrées « align: bottom » (Réglages, etc.) filent en pied, comme sur le web.
+        menu = [m for m in menu if m.get("align") != "bottom"] + \
+               [m for m in menu if m.get("align") == "bottom"]
+
+        def _menu_text(m):
+            lab = m.get("label") or {}
+            txt = lab.get(a.lang) or lab.get("fr") or m.get("id", "?")
+            ico = (m.get("icon") or "").strip()
+            return f"{ico} {txt}".strip() if ico else txt
+
+        if a.accessible:
+            # Le menu en liste numérotée. On ouvre N'IMPORTE quelle rubrique : le moteur
+            # transcrit celles qui sont du React sur mesure, plus besoin de les cacher.
+            print(f"\n{app} — {org['name']}.")
+            print(f"{len(menu)} rubriques.\n")
+            for i, m in enumerate(menu, 1):
+                print(f"{i}. {_menu_text(m)}")
+            print(f"\nTapez un numéro de 1 à {len(menu)} puis Entrée. 0 pour quitter.")
+            try:
+                n = input("> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                return
+            if not n.isdigit() or not (1 <= int(n) <= len(menu)):
+                return
+            _con_run_accessible(a.app_url, token, app, org["oid"], a.role, menu[int(n)-1]["id"], a.lang)
             return
-        if not n.isdigit() or not (1 <= int(n) <= len(rendable)):
+
+        # Titre du menu : la trame peut en donner un joli (« Organisations » plutôt que
+        # l'id brut) ; sinon on prend l'id de l'app. Le suffixe org ne s'ajoute que s'il
+        # y a une org nommée (le pseudo-écran des orgs n'en a pas).
+        menu_title = s.get("title") or app
+        hdr = f"{menu_title} — {org['name']}" if org.get("name") else menu_title
+
+        # Menu ↔ rubrique, en boucle : Retour depuis une rubrique revient au MENU ;
+        # Retour depuis le menu casse cette boucle et remonte au dashboard.
+        while True:
+            choice = _con_pick(menu, hdr, _menu_text)
+            if choice == "quit":
+                return                   # Quitter (q) au menu = sortie franche
+            if not choice:
+                break                    # Retour (Échap) au menu → remonter au dashboard
+            # On ouvre toute rubrique — le moteur rend le slot, ou transcrit le React.
+            r = _con_run(a.app_url, token, app, org["oid"], a.role, choice["id"], cols, rows, a.lang, center)
+            if r == "quit":
+                return                   # Quitter (q) = sortie franche, depuis n'importe où
+            # "back" / route consommée / None → on re-montre le menu (la boucle)
+
+        # Sorti du sommaire par Retour : si l'app était épinglée (--app), rien au-dessus
+        # → sortie ; sinon la boucle externe redessine le dashboard.
+        if pinned:
             return
-        _con_run_accessible(a.app_url, token, app, org["oid"], a.role, rendable[int(n)-1]["id"], a.lang)
-        return
-
-    choice = _con_pick(slots, f"{app} v{s['version']} — {org['name']}",
-                  lambda x: f"{x['id']:<16} {x['kind'] or '(React sur mesure — pas de rendu console)'}")
-    if not choice or not choice["kind"]:
-        return
-
-    _con_run(a.app_url, token, app, org["oid"], a.role, choice["id"], cols, rows, a.lang)
 
 
 
