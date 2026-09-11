@@ -7,6 +7,7 @@ LAN, private window) without CORS dance.
 
 Endpoints (all under /helper):
   GET  /helper/status         →  {"ok": true, "version": "..."}
+  GET  /helper/ping           →  {"ok": true} — battement du site ouvert (voir IDLE_EXIT_S)
   GET  /helper/lsusb          →  {"devices": [{bus, device, id, name}, ...]}
   GET  /helper/scale          →  scale reading (on-demand; the serial port is
                                   opened only while the page keeps polling)
@@ -44,7 +45,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHan
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.62'
+VERSION = '0.5.63'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -1225,6 +1226,110 @@ def list_mount(mount_path):
     return out
 
 
+# ─── Arrêt quand le site est fermé ─────────────────────────────────────────
+# Un site ouvert envoie GET /helper/ping toutes les 4 min (HelperHeartbeat,
+# monté dans le layout racine du frontend) et n'importe quelle autre requête
+# compte aussi. Sans nouvelles pendant IDLE_EXIT_S, le helper s'arrête — shell
+# compris — pour ne pas garder de mémoire pour un site que personne n'a ouvert.
+# Rouvrir le site le relance : AgentStatus → redstars-helper://launch.
+#
+# 100 % local : le battement vient du navigateur de cette machine, vers
+# 127.0.0.1. Rien ne sort, et la réponse fait 12 octets.
+#
+# 12 min = trois battements. Les navigateurs ralentissent les minuteries des
+# onglets en arrière-plan (Chrome les aligne sur la minute) : deux battements
+# manqués ne doivent pas suffire à couper un helper dont le site est ouvert.
+#
+# Horloge monotone : sur Linux elle ne compte pas la veille, donc un portable
+# qui se réveille ne trouve pas son helper « muet depuis 8 h ».
+#
+# Désactivé sur Android (le helper vit dans l'appli, qui EST le site) ;
+# désactivable partout avec REDSTARS_HELPER_IDLE_EXIT_S=0.
+IDLE_EXIT_S = int(os.environ.get('REDSTARS_HELPER_IDLE_EXIT_S', '720'))
+_last_seen = time.monotonic()
+
+
+def _mark_seen():
+    global _last_seen
+    _last_seen = time.monotonic()   # affectation d'un float : atomique sous CPython
+
+
+# Nom du binaire Tauri. Sur Linux, /proc/<pid>/comm est tronqué à 15 caractères
+# — « redstars-helper » en fait exactement 15.
+_SHELL_NAMES = ('redstars-helper', 'redstars helper')
+
+
+def _is_helper_shell(pid):
+    """Le processus `pid` est-il le shell Tauri du helper ? Faux au moindre doute."""
+    try:
+        if sys.platform.startswith('linux'):
+            return Path(f'/proc/{pid}/comm').read_text().strip().lower() in _SHELL_NAMES
+        if sys.platform == 'darwin':
+            out = subprocess.run(['ps', '-o', 'comm=', '-p', str(pid)],
+                                 capture_output=True, text=True, timeout=5).stdout.strip()
+            return os.path.basename(out).lower() in _SHELL_NAMES
+        if os.name == 'nt':
+            out = subprocess.run(['tasklist', '/FI', f'PID eq {pid}', '/FO', 'CSV', '/NH'],
+                                 capture_output=True, text=True, timeout=5).stdout.lower()
+            return any(n in out for n in _SHELL_NAMES)
+    except Exception:
+        pass
+    return False
+
+
+def _stop_parent_shell():
+    """Arrête le shell Tauri qui nous a lancés.
+
+    Sans ça, lui reste en mémoire : il ne surveille pas son enfant Python. Et
+    c'est d'ici qu'il faut le faire, pas du shell : le rpm/deb ne se met pas à
+    jour tout seul, alors que ce fichier, si (canal script-py). Seulement si le
+    parent est VRAIMENT le shell — lancé à la main depuis un terminal, le parent
+    est le shell de l'utilisateur, et on n'y touche pas."""
+    ppid = os.getppid()
+    if ppid <= 1 or not _is_helper_shell(ppid):
+        return
+    try:
+        if os.name == 'nt':
+            subprocess.run(['taskkill', '/PID', str(ppid), '/F'], capture_output=True, timeout=5)
+            return
+        import signal
+        os.kill(ppid, signal.SIGTERM)
+        # Un parent qui meurt nous fait adopter AU MOMENT de sa sortie, zombie ou
+        # pas : getppid() qui change est donc la preuve qu'il est parti — et
+        # évite de viser un PID recyclé entre-temps.
+        for _ in range(30):
+            time.sleep(0.1)
+            if os.getppid() != ppid:
+                return
+        os.kill(ppid, signal.SIGKILL)
+    except Exception as e:
+        print(f'  arrêt du shell impossible : {e}', flush=True)
+
+
+def _start_idle_watchdog():
+    if os.environ.get('REDSTARS_HELPER_PLATFORM') == 'android':
+        return   # le helper vit dans l'appli, qui est le site : il meurt avec elle
+    if IDLE_EXIT_S <= 0:
+        print('  arrêt sur inactivité : désactivé (REDSTARS_HELPER_IDLE_EXIT_S=0)')
+        return
+    span = f'{IDLE_EXIT_S // 60} min' if IDLE_EXIT_S >= 120 else f'{IDLE_EXIT_S} s'
+
+    def _loop():
+        while True:
+            left = IDLE_EXIT_S - (time.monotonic() - _last_seen)
+            if left <= 0:
+                break
+            # Dormir jusqu'à l'échéance, pas plus souvent : un réveil par
+            # battement au pire, et la file d'attente du noyau fait le reste.
+            time.sleep(max(5.0, left))
+        print(f'redstars-helper: aucun signe du site depuis {span} — arrêt.', flush=True)
+        _stop_parent_shell()
+        os._exit(0)
+
+    threading.Thread(target=_loop, name='idle-watchdog', daemon=True).start()
+    print(f'  arrêt sur inactivité : après {span} sans nouvelles du site')
+
+
 class Handler(SimpleHTTPRequestHandler):
     """Same-origin server: static files + /helper/* API endpoints."""
 
@@ -1254,6 +1359,7 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_OPTIONS(self):
         # Preflight for the dashboard's cross-origin /helper/* calls.
+        _mark_seen()
         self.send_response(204)
         self.end_headers()
 
@@ -1282,11 +1388,17 @@ class Handler(SimpleHTTPRequestHandler):
             return {}
 
     def do_GET(self):
+        _mark_seen()   # toute requête prouve qu'un client est là — la page démo comprise
         if not self.path.startswith('/helper/'):
             return super().do_GET()  # static file serve
         split = urlsplit(self.path)
         ep = split.path[len('/helper'):]  # strip prefix → /status, /lsusb, etc.
         query = parse_qs(split.query)
+        if ep == '/ping':
+            # Battement du site ouvert (HelperHeartbeat). _mark_seen() en tête
+            # de do_GET a déjà fait le travail : on répond le strict minimum.
+            self._json(200, {'ok': True})
+            return
         if ep == '/status':
             self._json(200, {'ok': True, 'version': VERSION})
             return
@@ -1548,6 +1660,7 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
 
     def do_POST(self):
+        _mark_seen()
         if not self.path.startswith('/helper/'):
             self._json(404, {'error': 'POST only allowed under /helper/*'})
             return
@@ -3926,6 +4039,9 @@ def main():
 
     # Se tenir à jour, sans qu'on le lui demande.
     _auto_update_loop(os.environ.get('REDSTARS_API_BASE', 'https://api.dev.redstars.redlinks.fr'))
+
+    # Et s'arrêter quand plus aucun site ouvert ne donne signe de vie.
+    _start_idle_watchdog()
 
     print(f'  HTTP  http://0.0.0.0:{PORT}/  +  /helper/*')
 
