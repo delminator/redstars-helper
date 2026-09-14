@@ -35,7 +35,7 @@ small { color: #666; display: block; margin-top: 16px; font-size: 0.8em; }
 <body>
 <div class="card">
   <h1>🚀 Redstars Helper</h1>
-  <p class="subtitle">Local agent for USB scale, WebGPU prefs, and demo serving.</p>
+  <p class="subtitle">Local agent for the USB scale, WebGPU prefs and the console.</p>
 
   <div id="serverStatus" class="status">
     <span class="dot"></span>
@@ -48,7 +48,6 @@ small { color: #666; display: block; margin-top: 16px; font-size: 0.8em; }
   </div>
 
   <div style="margin-top:24px;">
-    <button onclick="openBrowser()">Open demo in browser</button>
     <button class="secondary" onclick="restartHelper()">Restart helper</button>
   </div>
 
@@ -74,7 +73,6 @@ async function poll() {
 }
 poll(); setInterval(poll, 2000);
 
-window.openBrowser = () => invoke('open_demo');
 window.restartHelper = () => invoke('restart_helper');
 
 // Shell auto-update. Tauri v2's check() resolves to an Update object when

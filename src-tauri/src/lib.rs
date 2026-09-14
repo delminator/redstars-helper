@@ -12,9 +12,7 @@ use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, State};
-use tauri_plugin_opener::OpenerExt;
 
-const HELPER_URL: &str = "http://localhost:49080/";
 
 struct HelperProc(Mutex<Option<Child>>);
 
@@ -265,11 +263,6 @@ pub(crate) fn python_candidates() -> Vec<String> {
 }
 
 #[tauri::command]
-fn open_demo(app: AppHandle) -> Result<(), String> {
-    app.opener().open_url(HELPER_URL, None::<&str>).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 fn restart_helper(app: AppHandle, _proc: State<HelperProc>) -> Result<(), String> {
     restart_helper_proc(&app);
     Ok(())
@@ -297,7 +290,7 @@ pub fn run() {
             Some(vec!["--minimized"]),
         ))
         .manage(HelperProc(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![open_demo, restart_helper])
+        .invoke_handler(tauri::generate_handler![restart_helper])
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -356,7 +349,6 @@ pub fn run() {
             let menu = Menu::with_items(
                 app,
                 &[
-                    &MenuItem::with_id(app, "open", "Open demo", true, None::<&str>)?,
                     &MenuItem::with_id(app, "console", "Ouvrir RedStars en console", true, None::<&str>)?,
                     &MenuItem::with_id(app, "restart", "Restart helper", true, None::<&str>)?,
                     &MenuItem::with_id(app, "update", "Check for updates", true, None::<&str>)?,
@@ -366,9 +358,8 @@ pub fn run() {
             let _tray = TrayIconBuilder::new()
                 .menu(&menu)
                 .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("Redstars Helper — http://localhost:49080")
+                .tooltip("Redstars Helper")
                 .on_menu_event(|app, event| match event.id().as_ref() {
-                    "open" => { let _ = app.opener().open_url(HELPER_URL, None::<&str>); }
                     "console" => { open_console(app); }
                     "restart" => {
                         // Pull a fresh copy first, then restart with whichever

@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
-"""Unified static + helper HTTP server for the autoencoder demo page.
+"""RedStars helper — the local HTTP(S) API used by the site, the console client and
+the tray shell. Everything lives under /helper/*; any other path answers 404.
 
-Static files: served from this script's directory (the demo dir).
-Helper API: under /helper/* — same-origin so it works from any client (mobile,
-LAN, private window) without CORS dance.
+0.5.64 removed the codec (redEC / redDEC, the étalement chain, its benches, jobs
+and blob store), the embedded demo page and its float image models — along with
+the static file server that exposed them. Not deleted: archived, whole, at tag
+`archive/codec-demo-20260914` of the redstars-helper repo.
+
+The static server also served everything next to this script, cert.pem and
+key.pem included, on 0.0.0.0. It is gone with the page.
 
 Endpoints (all under /helper):
   GET  /helper/status         →  {"ok": true, "version": "..."}
@@ -13,8 +18,6 @@ Endpoints (all under /helper):
                                   opened only while the page keeps polling)
   POST /helper/enable-webgpu  →  appends WebGPU prefs to Firefox user.js
   POST /helper/reset-webgpu   →  removes WebGPU prefs
-  POST /helper/redEC          →  body = binary file ; → {hash_hex, level} (auto Red1..Red4)
-  POST /helper/redDEC         →  body = {"hash_hex": "<2048 chars>"} ; → {hashes_hex[1024], …}
   GET  /helper/files/pick     →  picker natif multi-fichiers ; → {paths, entries}
   POST /helper/refs/mount     →  {paths,label?} ; symlinks dans un tmpdir, no copy → {id,mount_path,entries}
   POST /helper/refs/open      →  {id,path?} ; xdg-open le tmpdir ou un de ses fichiers
@@ -22,7 +25,7 @@ Endpoints (all under /helper):
   GET  /helper/refs/list?id=  →  {entries} du tmpdir
 
 Listens on 0.0.0.0:49080 (HTTP) and 0.0.0.0:49443 (HTTPS) by default so mobile
-devices on the same LAN can hit the page (and the helper endpoints) via the
+devices on the same LAN can hit the helper endpoints via the
 desktop's IP. Ports are IANA dynamic range — no collision with standard apps.
 
 Run: python3 helper.py
@@ -35,17 +38,16 @@ import re
 import shutil
 import socket
 import ssl
-import struct
 import subprocess
 import tarfile
 import threading
 import time
 import uuid
-from http.server import BaseHTTPRequestHandler, HTTPServer, SimpleHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-VERSION = '0.5.63'
+VERSION = '0.5.64'
 PORT = int(os.environ.get('HELPER_PORT', '49080'))
 HTTPS_PORT = int(os.environ.get('HELPER_HTTPS_PORT', '49443'))
 DEMO_DIR = Path(__file__).resolve().parent
@@ -105,65 +107,6 @@ ALLOWED_ORIGINS = {
     'https://local.redlinks.fr:8443',
 }
 
-# Codec autoencoder (redEC/redDEC) — chargement paresseux à la 1ʳᵉ requête /helper/redEC ou /redDEC.
-# Permet au helper de démarrer même sans torch/numpy installés ; les routes renvoient une erreur
-# claire si la dépendance manque.
-_CODEC = {'loaded': False, 'redEC_chain': None, 'redDEC': None,
-          'encode_file': None, 'decode_file': None, 'backend': None,
-          'cascade_err': None, 'err': None}
-
-def _codec_dirs():
-    """Dirs that may hold the codec assets. helper.py auto-updates to the OS cache
-    dir (only helper.py there), so beyond DEMO_DIR we probe the env hint + the OS
-    bundle (rpm/deb productName dir, /opt, AppImage mount, macOS .app)."""
-    import glob as _glob
-    cands = [DEMO_DIR]
-    env = os.environ.get('REDSTARS_HELPER_BUNDLED_DIR')
-    if env:
-        cands.append(Path(env))
-    for pat in (
-        '/usr/lib/*/bundled/codec_onnx.py', '/usr/lib/*/resources/bundled/codec_onnx.py',
-        '/usr/share/*/bundled/codec_onnx.py', '/opt/*/bundled/codec_onnx.py',
-        '/tmp/.mount_*/usr/lib/*/bundled/codec_onnx.py',
-        '/Applications/*.app/Contents/Resources/bundled/codec_onnx.py',
-        str(Path.home() / 'Applications' / '*.app' / 'Contents' / 'Resources' / 'bundled' / 'codec_onnx.py'),
-    ):
-        for hit in _glob.glob(pat):
-            cands.append(Path(hit).parent)
-    return cands
-
-def _ensure_codec():
-    if _CODEC['loaded'] or _CODEC['err']:
-        return _CODEC['err']
-    try:
-        import sys as _sys
-        for d in _codec_dirs():
-            if (d / 'codec_onnx.py').is_file() or (d / 'codec_numpy.py').is_file() or (d / 'redEC.py').is_file():
-                if str(d) not in _sys.path:
-                    _sys.path.insert(0, str(d))
-                break
-        # Codec lossless PORTABLE (sidecar de correction → bit-exact) : ONNX (rapide,
-        # multi-thread CPU, sans torch) → numpy (secours si pas d'onnxruntime).
-        try:
-            import codec_onnx as _cf; _CODEC['backend'] = 'onnx'
-        except Exception:
-            import codec_numpy as _cf; _CODEC['backend'] = 'numpy'
-        _CODEC['encode_file'] = _cf.encode_file
-        _CODEC['decode_file'] = _cf.decode_file
-        # Cascade redEC/redDEC (1 hash ↔ 1024) — OPTIONNELLE, nécessite torch. Si torch
-        # absent (machine portable), le blob lossless marche quand même.
-        try:
-            from redEC import redEC_chain
-            from redDEC import redDEC
-            _CODEC['redEC_chain'] = redEC_chain
-            _CODEC['redDEC'] = redDEC
-        except Exception as _te:
-            _CODEC['cascade_err'] = f'{type(_te).__name__}: {_te}'
-        _CODEC['loaded'] = True
-        return None
-    except Exception as e:
-        _CODEC['err'] = f'{type(e).__name__}: {e}'
-        return _CODEC['err']
 
 SCALE_PORT = '/dev/ttyUSB0'
 SCALE_BAUD = 9600
@@ -488,94 +431,6 @@ def parse_lsusb_line(line):
 ISO_CACHE_DIR = Path.home() / '.cache' / 'redstars-helper' / 'iso'
 
 
-def _save_dir():
-    """Dossier où enregistrer les fichiers extraits, accessible à l'utilisateur.
-    Android : Android/data/com.redstars.app/files/RedStars (USB / gestionnaire de
-    fichiers, sans permission). Desktop : ~/Téléchargements (ou ~/Downloads)."""
-    env = os.environ.get('REDSTARS_HELPER_SAVE_DIR')
-    if env:
-        d = Path(env)
-    elif os.environ.get('REDSTARS_HELPER_PLATFORM') == 'android':
-        ext = Path('/storage/emulated/0/Android/data/com.redstars.app/files/RedStars')
-        try:
-            ext.mkdir(parents=True, exist_ok=True)
-            t = ext / '.wtest'; t.write_text('x'); t.unlink()   # test d'écriture
-            d = ext
-        except Exception:
-            d = Path(os.environ.get('XDG_CACHE_HOME') or os.path.expanduser('~')) / 'RedStars'
-    else:
-        dl = Path(os.path.expanduser('~/Téléchargements'))
-        d = (dl if dl.is_dir() else Path(os.path.expanduser('~/Downloads'))) / 'RedStars'
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-# --- Lecteur ISO9660(+Joliet) PUR PYTHON inliné (auto-update sans module séparé) ---
-# Liste/extrait les fichiers à la racine d'un ISO make_iso (xorrisofs -R -J),
-# sans monter ni binaire externe, en seek (gros ISO ok).
-_ISO_SECTOR = 2048
-
-def _iso_find_vds(f):
-    pvd = svd = None; sec = 16
-    while sec <= 64:
-        f.seek(sec * _ISO_SECTOR); vd = f.read(_ISO_SECTOR)
-        if len(vd) < 7 or vd[1:6] != b'CD001':
-            break
-        t = vd[0]
-        if t == 1 and pvd is None: pvd = vd
-        elif t == 2 and any(e in vd[88:120] for e in (b'%/@', b'%/C', b'%/E')): svd = vd
-        elif t == 255: break
-        sec += 1
-    return pvd, svd
-
-def _iso_root(vd):
-    rec = vd[156:190]
-    return struct.unpack('<I', rec[2:6])[0], struct.unpack('<I', rec[10:14])[0]
-
-def _iso_records(f, lba, length, joliet):
-    f.seek(lba * _ISO_SECTOR); block = f.read(length); out = []; i = 0
-    while i < len(block):
-        rlen = block[i]
-        if rlen == 0:
-            i = ((i // _ISO_SECTOR) + 1) * _ISO_SECTOR; continue
-        rec = block[i:i + rlen]; i += rlen
-        if len(rec) < 33: break
-        ext_lba = struct.unpack('<I', rec[2:6])[0]
-        dlen = struct.unpack('<I', rec[10:14])[0]
-        flags = rec[25]; idlen = rec[32]; ident = rec[33:33 + idlen]
-        if flags & 0x02: continue
-        if idlen == 1 and ident in (b'\x00', b'\x01'): continue
-        name = ident.decode('utf-16-be', 'replace') if joliet else ident.decode('ascii', 'replace')
-        if ';' in name: name = name.split(';')[0]
-        name = name.rstrip('.')
-        if name: out.append({'name': name, 'lba': ext_lba, 'size': dlen})
-    return out
-
-def _iso_list(path):
-    with open(path, 'rb') as f:
-        pvd, svd = _iso_find_vds(f)
-        vd = svd or pvd
-        if vd is None: return []
-        lba, length = _iso_root(vd)
-        recs = _iso_records(f, lba, length, joliet=(svd is not None))
-    return [{'name': r['name'], 'size': r['size']} for r in recs]
-
-def _iso_extract_to(path, name, dst_path, chunk=1 << 20):
-    with open(path, 'rb') as f:
-        pvd, svd = _iso_find_vds(f)
-        vd = svd or pvd
-        if vd is None: raise ValueError('pas un ISO9660')
-        lba, length = _iso_root(vd)
-        rec = next((r for r in _iso_records(f, lba, length, joliet=(svd is not None)) if r['name'] == name), None)
-        if rec is None: raise FileNotFoundError(name)
-        Path(dst_path).parent.mkdir(parents=True, exist_ok=True)
-        with open(dst_path, 'wb') as o:
-            f.seek(rec['lba'] * _ISO_SECTOR); remaining = rec['size']
-            while remaining > 0:
-                buf = f.read(min(chunk, remaining))
-                if not buf: break
-                o.write(buf); remaining -= len(buf)
-        return rec['size']
 MOUNTED = {}  # iso_id → {'iso_path','mount_path','dev','label','created_at'}
 
 # Refs « par référence » : un répertoire temporaire de symlinks vers des fichiers
@@ -584,239 +439,6 @@ MOUNTED = {}  # iso_id → {'iso_path','mount_path','dev','label','created_at'}
 REFS_CACHE_DIR = Path.home() / '.cache' / 'redstars-helper' / 'refs'
 REFS = {}  # refs_id → {'dir_path','label','sources':[...],'created_at'}
 
-# Jobs longs (décodage chaîne Red3/Red4 : 1M+ appels redDEC). On les
-# spawn dans un thread, le client poll /redDEC-job/<id>.
-JOBS = {}  # job_id → {kind, status: 'running'|'done'|'failed',
-           #           progress: 0..1, started_at, done_at?,
-           #           error?, result?: MountInfo}
-JOBS_LOCK = threading.Lock()
-
-def _new_job(kind: str) -> str:
-    job_id = uuid.uuid4().hex[:12]
-    with JOBS_LOCK:
-        JOBS[job_id] = {
-            'kind': kind,
-            'status': 'running',
-            'progress': 0.0,
-            'started_at': time.time(),
-        }
-    return job_id
-
-def _job_set(job_id: str, **kw):
-    with JOBS_LOCK:
-        if job_id in JOBS:
-            JOBS[job_id].update(kw)
-
-
-# --- File-codec blob store (the tested lossless chain: codec.py + sidecar) ----
-# Save  : files → make_iso → encode_file → blob (RSN1 + patch trailer) persisted here.
-# Restore: blob → decode_file → iso → mount. The blob is the shareable artifact
-# (~source size, lossless 1:1 — NOT a tiny hash; no contraction, no dropping).
-BLOB_DIR = (Path(os.environ.get('XDG_CACHE_HOME') or os.path.expanduser('~/.cache'))
-            / 'redstars-helper' / 'blobs')
-
-def _iso_payload_from_paths(abs_paths):
-    used, payload, files_meta = set(), {}, []
-    for src in abs_paths:
-        nm = Path(src).name
-        if nm in used:
-            base, ext = os.path.splitext(nm); i = 1
-            while f'{base}-{i}{ext}' in used: i += 1
-            nm = f'{base}-{i}{ext}'
-        used.add(nm); payload[nm] = src
-        files_meta.append({'name': nm, 'size': os.path.getsize(src)})
-    return payload, files_meta
-
-def _codec_encode_worker(job_id, abs_paths, label):
-    """Save : fichiers → make_iso → HASH INT8 (latents codec_numpy) stocké helper-side.
-    Plus de blob ni de sidecar ni de cascade : le hash int8 EST l'artefact, décodé
-    exactement par le réseau infaillible. Hash ≈ taille ISO (1:1, pas de compression)."""
-    try:
-        import codec_numpy, numpy as _np
-        payload, files_meta = _iso_payload_from_paths(abs_paths)
-        iso_path = make_iso(label, payload=payload)
-        iso = iso_path.read_bytes()
-        source_bytes = len(iso)
-        pad = (-source_bytes) % codec_numpy.BLOCK
-        arr = _np.frombuffer(iso + b'\x00' * pad, _np.uint8)
-        _, lat = codec_numpy._enc_blocks(arr)               # latents = le hash int8
-        BLOB_DIR.mkdir(parents=True, exist_ok=True)
-        hash_id = uuid.uuid4().hex[:16]
-        (BLOB_DIR / f'{hash_id}.hash').write_bytes(bytes(lat))
-        try: iso_path.unlink(missing_ok=True)
-        except Exception: pass
-        _job_set(job_id, status='done', progress=1.0, done_at=time.time(), result={
-            'hash_id': hash_id,
-            'hash_bytes': len(lat),
-            'source_bytes': source_bytes,     # taille ISO → pour tronquer au restore
-            'n_files': len(files_meta),
-            'files': files_meta,
-            'label': label,
-        })
-    except Exception as e:
-        _job_set(job_id, status='failed', done_at=time.time(), error=f'{type(e).__name__}: {e}')
-
-def _mount_iso_result(iso_path, iso_id, label):
-    """ISO (déjà écrite) → mount + list. Returns the MountInfo-shaped result dict.
-    Partagé entre le décode blob (legacy) et le décode hash int8."""
-    mount_path, dev, mount_error = None, None, None
-    try:
-        mount_path, dev = mount_iso(iso_path)
-        MOUNTED[iso_id] = {'iso_path': str(iso_path), 'mount_path': mount_path,
-                           'dev': dev, 'label': label or 'BUNDLE', 'created_at': time.time()}
-    except Exception as e:
-        mount_error = f'{type(e).__name__}: {e}'
-    result = {'id': iso_id, 'iso_path': str(iso_path), 'mount_path': mount_path,
-              'label': label or 'BUNDLE', 'output_size': iso_path.stat().st_size,
-              'entries': list_mount(mount_path) if mount_path else []}
-    if mount_error: result['mount_error'] = mount_error
-    return result
-
-
-def _hash_to_iso_and_mount(hash_bytes, iso_bytes, label):
-    """hash int8 (latents) → décode int8/NPU → ISO (tronquée à iso_bytes) → mount/list.
-    Pas de blob ni sidecar : on s'appuie sur le réseau infaillible (round-trip 0)."""
-    import codec_numpy, numpy as _np
-    raw = _np.asarray(codec_numpy._dec_bytes(bytes(hash_bytes)), _np.uint8).tobytes()
-    if iso_bytes and iso_bytes > 0:
-        raw = raw[:iso_bytes]
-    ISO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    iso_id = uuid.uuid4().hex[:12]
-    iso_path = ISO_CACHE_DIR / f'{iso_id}.iso'
-    iso_path.write_bytes(raw)
-    return _mount_iso_result(iso_path, iso_id, label)
-
-
-def _decode_blob_and_mount(blob_path, label):
-    """decode_file(blob) → iso → mount. Returns the MountInfo-shaped result dict."""
-    ISO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    iso_id = uuid.uuid4().hex[:12]
-    iso_path = ISO_CACHE_DIR / f'{iso_id}.iso'
-    _CODEC['decode_file'](str(blob_path), str(iso_path))
-    return _mount_iso_result(iso_path, iso_id, label)
-
-def _codec_restore_worker(job_id, hash_id, iso_bytes, label):
-    """hash int8 (par id, stocké helper-side) → décode int8/NPU → ISO → mount."""
-    try:
-        hp = BLOB_DIR / f'{hash_id}.hash'
-        if not hp.is_file():
-            _job_set(job_id, status='failed', done_at=time.time(), error=f'no such hash: {hash_id}'); return
-        _job_set(job_id, status='done', progress=1.0, done_at=time.time(),
-                 result=_hash_to_iso_and_mount(hp.read_bytes(), iso_bytes, label))
-    except Exception as e:
-        _job_set(job_id, status='failed', done_at=time.time(), error=f'{type(e).__name__}: {e}')
-
-def _codec_restore_data_worker(job_id, hash_bytes, iso_bytes, label):
-    """hash int8 collé (venu d'ailleurs) → décode int8 → ISO → mount."""
-    try:
-        _job_set(job_id, status='done', progress=1.0, done_at=time.time(),
-                 result=_hash_to_iso_and_mount(hash_bytes, iso_bytes, label))
-    except Exception as e:
-        _job_set(job_id, status='failed', done_at=time.time(), error=f'{type(e).__name__}: {e}')
-
-def _redDEC_chain_worker(job_id: str, hash_hex: str, level: int,
-                         name: str, target_size):
-    """Worker thread pour /redDEC-chain. Sortie 1024^level hashes ×
-    1024 octets ≈ 1024^(level+1) octets, truncate à `target_size`."""
-    try:
-        # Total d'appels redDEC attendus = somme géométrique.
-        total_calls = sum(1024**i for i in range(level))  # 1, 1025, ~1M, ~1G
-        calls_done = 0
-
-        def report_progress():
-            with JOBS_LOCK:
-                if job_id in JOBS:
-                    JOBS[job_id]['progress'] = min(0.99, calls_done / max(1, total_calls))
-
-        # Short-circuit dès qu'on a assez de hashes pour couvrir
-        # `bytes_needed` octets utiles à la sortie. Après l'étape `step`,
-        # chaque hash dans `current` se développera en 1024^(level-step)
-        # octets — donc on a besoin de ceil(bytes_needed / 1024^(level-step))
-        # hashes max. Pour un tar de 11 GiB en Red3 :
-        #     step 0 (avant 2 itérations restantes) → 11 hashes suffisent
-        #     step 1 (avant 1 itération restante)   → 11 264 hashes
-        #     step 2 (sortie finale)                → 11 534 336 leaves = 11 GiB
-        # Total ~11k appels redDEC au lieu de 1M+, ET on n'écrit JAMAIS
-        # plus que bytes_needed octets sur disque.
-        bytes_needed = int(target_size) if target_size and int(target_size) > 0 else None
-
-        current = [bytes.fromhex(hash_hex)]
-        for step in range(level):
-            nxt = []
-            mult_after_step = 1024 ** (level - step)  # ce qu'un hash de nxt deviendra
-            for h in current:
-                decoded = _CODEC['redDEC'](h)  # 1 Mo
-                calls_done += 1
-                if calls_done % 32 == 0:
-                    report_progress()
-                for i in range(1024):
-                    nxt.append(decoded[i*1024:(i+1)*1024])
-                if bytes_needed and len(nxt) * mult_after_step >= bytes_needed:
-                    break
-            current = nxt
-
-        # On limite current AVANT le join — sinon b''.join(1M hashes) =
-        # 1 GiB en RAM même si on truncate après.
-        if bytes_needed:
-            needed_hashes = -(-bytes_needed // 1024)  # ceil
-            current = current[:needed_hashes]
-        out_bytes = b''.join(current)
-        if bytes_needed:
-            out_bytes = out_bytes[:bytes_needed]
-
-        # Cache + mount.
-        cache_root = Path(os.environ.get('XDG_CACHE_HOME')
-                          or os.path.expanduser('~/.cache')) / 'redstars-helper' / 'decoded'
-        cache_root.mkdir(parents=True, exist_ok=True)
-        safe = re.sub(r'[^A-Za-z0-9._-]', '_', name)[:120] or 'decoded.bin'
-        out_path = cache_root / f'{hash_hex[:8]}-{safe}'
-        out_path.write_bytes(out_bytes)
-
-        # Les `out_bytes` SONT directement les bytes d'une iso 9660 / UDF
-        # (l'encode redEC porte sur l'iso construite côté envoi, pas sur
-        # un tar). Le système de fichiers ISO porte sa propre table
-        # d'index — on monte la sortie telle quelle et l'utilisateur
-        # retrouve ses fichiers à la racine, sans cache local ni sidecar
-        # de métadonnées (c.-à-d. ça marche sur n'importe quelle machine
-        # qui reçoit juste le hash + le bundle_size).
-        ISO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        iso_label = f'BUNDLE-Red{level}'
-        iso_id = uuid.uuid4().hex[:12]
-        iso_path = ISO_CACHE_DIR / f'{iso_id}.iso'
-        shutil.move(str(out_path), str(iso_path))
-        mount_path = None
-        dev = None
-        mount_error = None
-        try:
-            mount_path, dev = mount_iso(iso_path)
-            MOUNTED[iso_id] = {
-                'iso_path': str(iso_path),
-                'mount_path': mount_path,
-                'dev': dev,
-                'label': iso_label,
-                'created_at': time.time(),
-            }
-        except Exception as e:
-            # Mount KO = la sortie cascade n'est pas une iso valide (codec
-            # a perdu des bits sur une entrée non cascade-valide, ou
-            # bundle_size faux). On garde quand même le .iso sur disque
-            # pour debug et on remonte l'erreur au client — pas de
-            # fallback `payload.bin` muet qui ferait croire à un succès.
-            mount_error = f'{type(e).__name__}: {e}'
-        result = {
-            'level': level,
-            'output_path': str(iso_path), 'output_size': len(out_bytes),
-            'id': iso_id, 'mount_path': mount_path, 'label': iso_label,
-            'iso_path': str(iso_path),
-            'entries': list_mount(mount_path) if mount_path else [],
-        }
-        if mount_error:
-            result['mount_error'] = mount_error
-        _job_set(job_id, status='done', progress=1.0, done_at=time.time(),
-                 result=result)
-    except Exception as e:
-        _job_set(job_id, status='failed', done_at=time.time(),
-                 error=f'{type(e).__name__}: {e}')
 
 def _recover_refs_from_disk():
     """Au boot, repeuple REFS depuis les sous-dossiers existants de
@@ -1330,11 +952,9 @@ def _start_idle_watchdog():
     print(f'  arrêt sur inactivité : après {span} sans nouvelles du site')
 
 
-class Handler(SimpleHTTPRequestHandler):
-    """Same-origin server: static files + /helper/* API endpoints."""
+class Handler(BaseHTTPRequestHandler):
+    """The /helper/* API, and nothing else — no static files since 0.5.64."""
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, directory=str(DEMO_DIR), **kwargs)
 
     def end_headers(self):
         # Allow CORS for /helper/* from the dev/prod dashboards. Same-origin
@@ -1388,9 +1008,12 @@ class Handler(SimpleHTTPRequestHandler):
             return {}
 
     def do_GET(self):
-        _mark_seen()   # toute requête prouve qu'un client est là — la page démo comprise
+        _mark_seen()   # toute requête prouve qu'un client est là
         if not self.path.startswith('/helper/'):
-            return super().do_GET()  # static file serve
+            # No static files any more: the demo page and everything next to this
+            # script (keys included) used to be served from here.
+            self._json(404, {'error': 'not found'})
+            return
         split = urlsplit(self.path)
         ep = split.path[len('/helper'):]  # strip prefix → /status, /lsusb, etc.
         query = parse_qs(split.query)
@@ -1402,144 +1025,10 @@ class Handler(SimpleHTTPRequestHandler):
         if ep == '/status':
             self._json(200, {'ok': True, 'version': VERSION})
             return
-        if ep == '/codec/bench-single':
-            # Latence d'UNE inférence 32×32 : enc (image→hash) et dec (hash→image),
-            # moyennée sur n forwards. Isole le coût per-patch (vs le débit en masse).
-            err = _ensure_codec()
-            if err:
-                self._json(500, {'error': f'codec load failed: {err}'}); return
-            import time as _t
-            import numpy as _np
-            try:
-                from nn_numpy import enc_forward, dec_forward
-                n = max(1, min(2000, int((query.get('n', ['200']) or ['200'])[0])))
-                patch = _np.random.randint(0, 256, (1, 32, 32), dtype=_np.uint8)
-                z = enc_forward(patch)            # warmup + latent pour le decode
-                _ = dec_forward(z)
-                t0 = _t.time()
-                for _ in range(n):
-                    enc_forward(patch)
-                enc_ms = (_t.time() - t0) * 1000.0 / n
-                t0 = _t.time()
-                for _ in range(n):
-                    dec_forward(z)
-                dec_ms = (_t.time() - t0) * 1000.0 / n
-                self._json(200, {
-                    'n': n, 'backend': _CODEC.get('backend'),
-                    'enc_ms_per_patch': round(enc_ms, 3),
-                    'dec_ms_per_patch': round(dec_ms, 3),
-                })
-            except Exception as e:
-                self._json(500, {'error': f'{type(e).__name__}: {e}'})
-            return
-        if ep == '/codec/bench-parallel':
-            # Décode n patchs en SÉRIE vs en T THREADS → mesure le speedup réel
-            # (les threads ne scalent que si numpy libère le GIL pendant l'einsum).
-            err = _ensure_codec()
-            if err:
-                self._json(500, {'error': f'codec load failed: {err}'}); return
-            import time as _t
-            import os as _os
-            import numpy as _np
-            from concurrent.futures import ThreadPoolExecutor
-            try:
-                from nn_numpy import dec_forward
-                n = max(64, min(8192, int((query.get('n', ['2048']) or ['2048'])[0])))
-                T = max(1, min(16, int((query.get('threads', [str(_os.cpu_count() or 4)]) or ['4'])[0])))
-                z = _np.random.randint(0, 2, (n, 8, 32, 32)).astype(_np.uint8)
-                dec_forward(z[:16])                                # warmup
-                t0 = _t.time()
-                for i in range(0, n, 256):
-                    dec_forward(z[i:i + 256])
-                ser = _t.time() - t0
-                cs = (n + T - 1) // T
-                chunks = [z[i:i + cs] for i in range(0, n, cs)]
-                t0 = _t.time()
-                with ThreadPoolExecutor(max_workers=T) as ex:
-                    list(ex.map(dec_forward, chunks))
-                par = _t.time() - t0
-                mb = n * 1024 / 1e6
-                self._json(200, {
-                    'n': n, 'threads': T, 'cores': _os.cpu_count(),
-                    'serial_mbps': round(mb / ser, 2),
-                    'parallel_mbps': round(mb / par, 2),
-                    'speedup': round(ser / par, 2),
-                })
-            except Exception as e:
-                self._json(500, {'error': f'{type(e).__name__}: {e}'})
-            return
-        if ep == '/codec/gpu-bench':
-            # Bench de l'inférence GPU NATIVE (TFLite via la classe Kotlin CodecGpu,
-            # interop Chaquopy). Android uniquement.
-            if os.environ.get('REDSTARS_HELPER_PLATFORM') != 'android':
-                self._json(200, {'skip': 'desktop — pas de CodecGpu natif'}); return
-            try:
-                from com.redstars.app import CodecGpu
-                n = max(64, min(8192, int((query.get('n', ['2048']) or ['2048'])[0])))
-                self._json(200, {
-                    'status': str(CodecGpu.status()),
-                    'result': str(CodecGpu.selfTest(n)),
-                })
-            except Exception as e:
-                self._json(500, {'error': f'{type(e).__name__}: {e}'})
-            return
-        if ep == '/codec/int8-bench':
-            # Compare FLOAT vs INT8 du décode codec sur le NPU (CodecGpu.benchInt8).
-            if os.environ.get('REDSTARS_HELPER_PLATFORM') != 'android':
-                self._json(200, {'skip': 'desktop — pas de CodecGpu natif'}); return
-            try:
-                from com.redstars.app import CodecGpu
-                n = max(64, min(8192, int((query.get('n', ['2048']) or ['2048'])[0])))
-                self._json(200, {
-                    'status': str(CodecGpu.status()),
-                    'result': str(CodecGpu.benchInt8(n)),
-                })
-            except Exception as e:
-                self._json(500, {'error': f'{type(e).__name__}: {e}'})
-            return
-        if ep == '/codec/list-savedir':
-            # Liste les fichiers du dossier RedStars (pour picker sans navigateur sur mobile).
-            try:
-                d = _save_dir()
-                files = sorted(({'name': f.name, 'bytes': f.stat().st_size}
-                                for f in d.iterdir() if f.is_file()), key=lambda x: x['name'])
-                self._json(200, {'dir': str(d), 'files': files})
-            except Exception as e:
-                self._json(500, {'error': f'{type(e).__name__}: {e}'})
-            return
-        if ep == '/redDEC-job':
-            # GET /redDEC-job?id=<job_id> — poll endpoint pour /redDEC-chain.
-            job_id = (query.get('id', ['']) or [''])[0]
-            with JOBS_LOCK:
-                job = JOBS.get(job_id)
-                if job is None:
-                    self._json(404, {'error': 'unknown job id'}); return
-                snapshot = dict(job)
-            self._json(200, snapshot)
-            return
-        if ep == '/codec/blob':
-            # GET /codec/blob?id=<blob_id> — récupère le blob encodé pour le tester
-            # ailleurs. base64 si petit (≤256 Ko → copiable/QR), sinon taille + chemin.
-            blob_id = (query.get('id', ['']) or [''])[0]
-            if not re.fullmatch(r'[0-9a-f]{8,32}', blob_id):
-                self._json(400, {'error': 'id required (hex)'}); return
-            bp = BLOB_DIR / f'{blob_id}.rsn'
-            if not bp.is_file():
-                self._json(404, {'error': f'no such blob: {blob_id}'}); return
-            sz = bp.stat().st_size
-            # ≤8 Mo → base64 copiable (clipboard). Au-delà → trop gros, on rend
-            # juste le chemin (le blob est un fichier à copier tel quel). QR jamais
-            # possible : une ISO fait ≥376 Ko, un QR plafonne ~3 Ko.
-            if sz > 8 * 1024 * 1024:
-                self._json(200, {'ok': True, 'blob_id': blob_id, 'blob_bytes': sz,
-                                 'too_big': True, 'path': str(bp)}); return
-            import base64 as _b64
-            self._json(200, {'ok': True, 'blob_id': blob_id, 'blob_bytes': sz,
-                             'blob_b64': _b64.b64encode(bp.read_bytes()).decode('ascii')}); return
         if ep == '/disk':
             # Espace dispo sur la partition qui hébergera les sorties.
             # ?path=<…> ou défaut = le cache redstars-helper (= là où
-            # /redDEC-chain et /refs/ écrivent).
+            # /refs/ écrit).
             target = (query.get('path', ['']) or [''])[0]
             if not target:
                 target = str(Path(os.environ.get('XDG_CACHE_HOME')
@@ -1654,7 +1143,11 @@ class Handler(SimpleHTTPRequestHandler):
 
     def do_HEAD(self):
         if not self.path.startswith('/helper/'):
-            return super().do_HEAD()
+            # No static files any more (see do_GET). This used to fall through to
+            # SimpleHTTPRequestHandler; with the plain base class it would raise.
+            self.send_response(404)
+            self.end_headers()
+            return
         # Helper endpoints don't really do HEAD, just say OK.
         self.send_response(200)
         self.end_headers()
@@ -1664,12 +1157,8 @@ class Handler(SimpleHTTPRequestHandler):
         if not self.path.startswith('/helper/'):
             self._json(404, {'error': 'POST only allowed under /helper/*'})
             return
-        # Even POST endpoints can take a `?path=…` style query (e.g.
-        # /helper/redEC?path=…). do_GET parses it the same way ; we
-        # mirror it here so handlers can read `query[...]` uniformly.
         split = urlsplit(self.path)
         ep    = split.path[len('/helper'):]
-        query = parse_qs(split.query)
         if ep == '/session':
             # Conserver la session, SANS ouvrir de terminal.
             #
@@ -1734,92 +1223,6 @@ class Handler(SimpleHTTPRequestHandler):
                     return
                 # On ne renvoie JAMAIS le jeton, même en écho de la requête.
                 self._json(200, {'ok': True, 'terminal': term})
-            except Exception as e:
-                self._json(500, {'error': f'{type(e).__name__}: {e}'})
-            return
-        if ep == '/codec/encode-hash':
-            # data brute -> hash (latents purs, SANS blob/sidecar). Padding zéro à 1024.
-            try:
-                import codec_numpy, numpy as _np
-                n = int(self.headers.get('Content-Length', '0') or 0)
-                raw = self.rfile.read(n) if n > 0 else b''
-                pad = (-len(raw)) % codec_numpy.BLOCK
-                arr = _np.frombuffer(raw + b'\x00' * pad, _np.uint8)
-                _, lat = codec_numpy._enc_blocks(arr)
-                self._raw(200, bytes(lat))
-            except Exception as e:
-                self._json(500, {'error': f'{type(e).__name__}: {e}'})
-            return
-        if ep == '/codec/decode-hash':
-            # hash (latents purs) -> data brute (N*1024). Décode via INT8/NPU si routé.
-            try:
-                import codec_numpy, numpy as _np
-                n = int(self.headers.get('Content-Length', '0') or 0)
-                lat = self.rfile.read(n) if n > 0 else b''
-                out = codec_numpy._dec_bytes(lat)
-                self._raw(200, _np.asarray(out, _np.uint8).tobytes())
-            except Exception as e:
-                self._json(500, {'error': f'{type(e).__name__}: {e}'})
-            return
-        if ep == '/codec/encode-hash-save':
-            # data brute (body) -> hash (latents) enregistré sur l'appareil. ?name=
-            try:
-                import codec_numpy, numpy as _np
-                name = (query.get('name', ['fichier.hash']) or ['fichier.hash'])[0]
-                n = int(self.headers.get('Content-Length', '0') or 0)
-                raw = self.rfile.read(n) if n > 0 else b''
-                pad = (-len(raw)) % codec_numpy.BLOCK
-                arr = _np.frombuffer(raw + b'\x00' * pad, _np.uint8)
-                _, lat = codec_numpy._enc_blocks(arr)
-                p = _save_dir() / os.path.basename(name)
-                p.write_bytes(bytes(lat))
-                self._json(200, {'saved_path': str(p), 'in_bytes': len(raw), 'hash_bytes': len(lat)})
-            except Exception as e:
-                self._json(500, {'error': f'{type(e).__name__}: {e}'})
-            return
-        if ep == '/codec/decode-hash-save':
-            # hash (latents, body) -> data décodée (INT8/NPU) enregistrée sur l'appareil. ?name=
-            try:
-                import codec_numpy, numpy as _np
-                name = (query.get('name', ['fichier.bin']) or ['fichier.bin'])[0]
-                n = int(self.headers.get('Content-Length', '0') or 0)
-                lat = self.rfile.read(n) if n > 0 else b''
-                out = _np.asarray(codec_numpy._dec_bytes(lat), _np.uint8).tobytes()
-                p = _save_dir() / os.path.basename(name)
-                p.write_bytes(out)
-                self._json(200, {'saved_path': str(p), 'hash_bytes': len(lat), 'out_bytes': len(out)})
-            except Exception as e:
-                self._json(500, {'error': f'{type(e).__name__}: {e}'})
-            return
-        if ep == '/codec/encode-file-hash':
-            # {name} d'un fichier du dossier RedStars -> hash (latents) au même endroit.
-            try:
-                import codec_numpy, numpy as _np
-                name = os.path.basename(self._read_json().get('name', ''))
-                src = _save_dir() / name
-                if not name or not src.is_file():
-                    self._json(404, {'error': f'introuvable: {name}'}); return
-                raw = src.read_bytes(); pad = (-len(raw)) % codec_numpy.BLOCK
-                arr = _np.frombuffer(raw + b'\x00' * pad, _np.uint8)
-                _, lat = codec_numpy._enc_blocks(arr)
-                p = _save_dir() / (name + '.hash'); p.write_bytes(bytes(lat))
-                self._json(200, {'saved_path': str(p), 'name': name + '.hash', 'in_bytes': len(raw), 'hash_bytes': len(lat)})
-            except Exception as e:
-                self._json(500, {'error': f'{type(e).__name__}: {e}'})
-            return
-        if ep == '/codec/decode-file-hash':
-            # {name} d'un fichier hash du dossier RedStars -> data décodée (INT8/NPU) au même endroit.
-            try:
-                import codec_numpy, numpy as _np
-                name = os.path.basename(self._read_json().get('name', ''))
-                src = _save_dir() / name
-                if not name or not src.is_file():
-                    self._json(404, {'error': f'introuvable: {name}'}); return
-                lat = src.read_bytes()
-                out = _np.asarray(codec_numpy._dec_bytes(lat), _np.uint8).tobytes()
-                outname = name[:-5] if name.endswith('.hash') else name + '.decoded'
-                p = _save_dir() / outname; p.write_bytes(out)
-                self._json(200, {'saved_path': str(p), 'name': outname, 'hash_bytes': len(lat), 'out_bytes': len(out)})
             except Exception as e:
                 self._json(500, {'error': f'{type(e).__name__}: {e}'})
             return
@@ -1993,313 +1396,6 @@ class Handler(SimpleHTTPRequestHandler):
                 self._json(200, {'ok': True})
             except Exception as e:
                 self._json(500, {'error': type(e).__name__ + ': ' + str(e)})
-            return
-
-        if ep == '/redEC':
-            err = _ensure_codec()
-            if err:
-                self._json(500, {'error': f'codec load failed: {err}', 'hint': 'pip install torch numpy'}); return
-            # Two modes :
-            #   - ?path=<absolute path>  → encode an existing file on disk.
-            #     The path MUST sit under one of the active /refs/ mount
-            #     dirs (same guard as /refs/open) so the browser can't
-            #     point us at /etc/anything via a malicious POST.
-            #   - body : raw binary, content-type application/octet-stream.
-            #     Used when the file lives only in the browser.
-            query_path = (query.get('path', ['']) or [''])[0]
-            import tempfile
-            with tempfile.TemporaryDirectory() as td:
-                in_path  = Path(td) / 'in.bin'
-                out_path = Path(td) / 'out.bin'
-                if query_path:
-                    src = os.path.normpath(os.path.abspath(query_path))
-                    allowed = False
-                    for info in REFS.values():
-                        mount = os.path.normpath(os.path.abspath(info['dir_path']))
-                        if src == mount or src.startswith(mount + os.sep):
-                            allowed = True; break
-                    if not allowed:
-                        self._json(403, {'error': 'path not under any active /refs/ mount'}); return
-                    if not os.path.isfile(src):
-                        self._json(404, {'error': f'no such file: {src}'}); return
-                    in_path.write_bytes(Path(src).read_bytes())
-                else:
-                    n = int(self.headers.get('Content-Length', '0') or 0)
-                    if n <= 0:
-                        self._json(400, {'error': 'empty body and no ?path= — POST raw binary or use ?path=<refs-file>'}); return
-                    in_path.write_bytes(self.rfile.read(n))
-                try:
-                    level, h, in_size = _CODEC['redEC_chain'](in_path, out_path)
-                    self._json(200, {
-                        'ok': True,
-                        'level': f'Red{level}',
-                        'n_chain_steps': level,
-                        'input_bytes': in_size,
-                        'output_hash_hex': h.hex(),
-                        'output_bytes': len(h),
-                    })
-                except Exception as e:
-                    self._json(500, {'error': f'{type(e).__name__}: {e}'})
-            return
-
-        if ep == '/redEC/bundle':
-            # Bundle plusieurs fichiers en UN seul hash. C'est le mode
-            # canonique pour le "disque virtuel" : tout le payload (1 MiB
-            # pour Red1, 1 GiB pour Red2, …) est encodé en une seule chaîne
-            # redEC, donc UN seul hash partageable via QR. La sortie
-            # redDEC-chain (modifiée pour détecter `tarfile.is_tarfile`)
-            # ré-extrait les fichiers à leurs noms d'origine.
-            #
-            # body : {"paths": ["<abs>/a", "<abs>/b", …], "label"?: "…"}
-            #        Chaque path doit être sous un /refs/ actif (même garde
-            #        que /redEC), pour empêcher le browser d'aller tarrer
-            #        /etc/* via un POST malicieux.
-            err = _ensure_codec()
-            if err:
-                self._json(500, {'error': f'codec load failed: {err}', 'hint': 'pip install torch numpy'}); return
-            body  = self._read_json()
-            paths = body.get('paths') or []
-            if not paths:
-                self._json(400, {'error': 'paths required'}); return
-            abs_paths = []
-            for p in paths:
-                src = os.path.normpath(os.path.abspath(p))
-                allowed = False
-                for info in REFS.values():
-                    mount = os.path.normpath(os.path.abspath(info['dir_path']))
-                    if src == mount or src.startswith(mount + os.sep):
-                        allowed = True; break
-                if not allowed:
-                    self._json(403, {'error': f'path not under any active /refs/ mount: {p}'}); return
-                if not os.path.isfile(src):
-                    self._json(404, {'error': f'no such file: {src}'}); return
-                abs_paths.append(src)
-            import tempfile
-            with tempfile.TemporaryDirectory() as td:
-                out_path = Path(td) / 'out.bin'
-                # On construit l'iso d'ABORD avec le dict {nom: src_path}
-                # — make_iso stream-copy chaque fichier (pas de RAM bloat
-                # pour les gros films). Les bytes de cette iso SONT ce
-                # qu'on passe à redEC_chain : pas de tar intermédiaire.
-                # Au décode l'arbre du système de fichiers ISO 9660 / UDF
-                # sert d'index — n'importe quelle machine qui reçoit le
-                # hash + le bundle_size peut remonter l'iso et retrouver
-                # les fichiers d'origine sans cache ni sidecar local.
-                iso_label = (body.get('label') or 'REDSTARS')[:32]
-                iso_payload = {}
-                used = set()
-                files_meta = []
-                for src in abs_paths:
-                    nm = Path(src).name
-                    if nm in used:
-                        base, ext = os.path.splitext(nm)
-                        i = 1
-                        while f'{base}-{i}{ext}' in used:
-                            i += 1
-                        nm = f'{base}-{i}{ext}'
-                    used.add(nm)
-                    iso_payload[nm] = src
-                    files_meta.append({'name': nm, 'size': os.path.getsize(src)})
-                try:
-                    iso_path = make_iso(iso_label, payload=iso_payload)
-                except Exception as e:
-                    self._json(500, {'error': f'make_iso failed: {type(e).__name__}: {e}'}); return
-                bundle_size = iso_path.stat().st_size
-                try:
-                    level, h, _ = _CODEC['redEC_chain'](iso_path, out_path)
-                except Exception as e:
-                    self._json(500, {'error': f'{type(e).__name__}: {e}'}); return
-                iso_id = uuid.uuid4().hex[:12]
-                iso_info = None
-                try:
-                    mount_path, dev = mount_iso(iso_path)
-                    MOUNTED[iso_id] = {
-                        'iso_path': str(iso_path),
-                        'mount_path': mount_path,
-                        'dev': dev,
-                        'label': iso_label,
-                        'created_at': time.time(),
-                    }
-                    iso_info = {
-                        'iso_id': iso_id,
-                        'mount_path': mount_path,
-                        'label': iso_label,
-                        'entries': list_mount(mount_path),
-                    }
-                except Exception as e:
-                    # ISO mount best-effort côté envoi — si udisksctl manque
-                    # ou échoue on garde quand même le hash redEC pour le
-                    # partage. La sortie reste réceptionnable côté décode.
-                    iso_info = {'error': f'iso mount failed: {type(e).__name__}: {e}'}
-                self._json(200, {
-                    'ok': True,
-                    'level': f'Red{level}',
-                    'n_chain_steps': level,
-                    'output_hash_hex': h.hex(),
-                    'output_bytes': len(h),
-                    'bundle_bytes': bundle_size,
-                    'n_files': len(files_meta),
-                    'files': files_meta,
-                    'iso': iso_info,
-                })
-            return
-
-        if ep == '/codec/encode':
-            # Save : files → make_iso → HASH INT8 (codec_numpy, sans torch). Async job.
-            body  = self._read_json()
-            paths = body.get('paths') or []
-            label = (body.get('label') or 'REDSTARS')[:32]
-            if not paths:
-                self._json(400, {'error': 'paths required'}); return
-            abs_paths = []
-            for p in paths:
-                src = os.path.normpath(os.path.abspath(p))
-                allowed = any(
-                    src == os.path.normpath(os.path.abspath(info['dir_path'])) or
-                    src.startswith(os.path.normpath(os.path.abspath(info['dir_path'])) + os.sep)
-                    for info in REFS.values())
-                if not allowed:
-                    self._json(403, {'error': f'path not under any active /refs/ mount: {p}'}); return
-                if not os.path.isfile(src):
-                    self._json(404, {'error': f'no such file: {src}'}); return
-                abs_paths.append(src)
-            job_id = _new_job('codec-encode')
-            threading.Thread(target=_codec_encode_worker, args=(job_id, abs_paths, label), daemon=True).start()
-            self._json(200, {'job_id': job_id}); return
-
-        if ep == '/codec/restore':
-            # Remonter : hash int8 (par id) → décode int8 → iso → mount. Async job.
-            body      = self._read_json()
-            hash_id   = (body.get('hash_id') or '').strip()
-            iso_bytes = int(body.get('iso_bytes') or 0)
-            label     = (body.get('label') or 'BUNDLE')[:32]
-            if not re.fullmatch(r'[0-9a-f]{8,32}', hash_id):
-                self._json(400, {'error': 'hash_id required (hex)'}); return
-            job_id = _new_job('codec-restore')
-            threading.Thread(target=_codec_restore_worker, args=(job_id, hash_id, iso_bytes, label), daemon=True).start()
-            self._json(200, {'job_id': job_id}); return
-
-        if ep == '/codec/restore-data':
-            # Remonter un hash int8 COLLÉ (hex, encodé ailleurs). Async job.
-            body  = self._read_json()
-            hex_  = (body.get('hash_hex') or '').strip().lower().replace(' ', '')
-            iso_bytes = int(body.get('iso_bytes') or 0)
-            label = (body.get('label') or 'BUNDLE')[:32]
-            if not re.fullmatch(r'[0-9a-f]+', hex_) or len(hex_) % 2048 != 0:
-                self._json(400, {'error': 'hash_hex invalide (hex, multiple de 2048)'}); return
-            job_id = _new_job('codec-restore-data')
-            threading.Thread(target=_codec_restore_data_worker, args=(job_id, bytes.fromhex(hex_), iso_bytes, label), daemon=True).start()
-            self._json(200, {'job_id': job_id}); return
-
-        if ep == '/codec/iso-list':
-            # Liste les fichiers à la racine d'un ISO DÉJÀ décodé (sans le monter).
-            # Mobile : après restore (mount KO), on affiche le contenu sur la page.
-            body = self._read_json()
-            iso_id = (body.get('id') or '').strip()
-            if not re.fullmatch(r'[0-9a-f]{8,32}', iso_id):
-                self._json(400, {'error': 'id requis (hex)'}); return
-            iso_path = ISO_CACHE_DIR / f'{iso_id}.iso'
-            if not iso_path.is_file():
-                self._json(404, {'error': 'iso introuvable (expiré ?)'}); return
-            try:
-                self._json(200, {'id': iso_id, 'files': _iso_list(str(iso_path))})
-            except Exception as e:
-                self._json(500, {'error': f'{type(e).__name__}: {e}'})
-            return
-
-        if ep == '/codec/save-file':
-            # Extrait UN fichier de l'ISO décodé vers le dossier accessible
-            # (sans app externe). Renvoie le chemin enregistré.
-            body = self._read_json()
-            iso_id = (body.get('id') or '').strip()
-            name   = Path(str(body.get('name') or '')).name      # anti path-traversal
-            if not re.fullmatch(r'[0-9a-f]{8,32}', iso_id) or not name:
-                self._json(400, {'error': 'id (hex) + name requis'}); return
-            iso_path = ISO_CACHE_DIR / f'{iso_id}.iso'
-            if not iso_path.is_file():
-                self._json(404, {'error': 'iso introuvable (expiré ?)'}); return
-            try:
-                dst = _save_dir() / name
-                size = _iso_extract_to(str(iso_path), name, str(dst))
-                self._json(200, {'ok': True, 'saved_path': str(dst), 'size': size})
-            except FileNotFoundError:
-                self._json(404, {'error': f'fichier absent de l\'iso: {name}'})
-            except Exception as e:
-                self._json(500, {'error': f'{type(e).__name__}: {e}'})
-            return
-
-        if ep == '/redDEC':
-            err = _ensure_codec()
-            if err:
-                self._json(500, {'error': f'codec load failed: {err}', 'hint': 'pip install torch numpy'}); return
-            body = self._read_json()
-            hash_hex = (body.get('hash_hex') or '').strip().lower()
-            if len(hash_hex) != 2048 or any(c not in '0123456789abcdef' for c in hash_hex):
-                self._json(400, {'error': 'hash_hex must be exactly 2048 hex chars (= 8192 bits = 1 BYTEA)'}); return
-            try:
-                out_bytes  = _CODEC['redDEC'](bytes.fromhex(hash_hex))
-                n_hashes   = len(out_bytes) // 1024
-                hashes_hex = [out_bytes[i*1024:(i+1)*1024].hex() for i in range(n_hashes)]
-                n_distinct = len(set(hashes_hex))
-                self._json(200, {
-                    'ok': True,
-                    'input_hash_hex': hash_hex,
-                    'output_bytes': len(out_bytes),
-                    'n_hashes': n_hashes,
-                    'n_distinct': n_distinct,
-                    'hashes_hex': hashes_hex,
-                })
-            except Exception as e:
-                self._json(500, {'error': f'{type(e).__name__}: {e}'})
-            return
-
-        if ep == '/redDEC-chain':
-            # POST → spawn un job thread, retourne {job_id} immédiatement.
-            # Le client poll /redDEC-job?id=<job_id> pour progress + résultat.
-            # Tous les niveaux sont async (cohérent) — Red1 finit en ~1 s,
-            # Red2 en minutes, Red3/4 en heures.
-            err = _ensure_codec()
-            if err:
-                self._json(500, {'error': f'codec load failed: {err}', 'hint': 'pip install torch numpy'}); return
-            body = self._read_json()
-            hash_hex = (body.get('hash_hex') or '').strip().lower()
-            level    = int(body.get('level') or 1)
-            name     = (body.get('name') or 'decoded.bin').strip() or 'decoded.bin'
-            target_size = body.get('size')
-            if len(hash_hex) != 2048 or any(c not in '0123456789abcdef' for c in hash_hex):
-                self._json(400, {'error': 'hash_hex must be exactly 2048 hex chars'}); return
-            if level < 1 or level > 4:
-                self._json(400, {'error': 'level must be 1..4'}); return
-            # Pré-check disque AVANT de lancer le thread — on doit pouvoir
-            # écrire 1024^(level+1) octets (Red1 = 1 Mio … Red4 = 1 Pio).
-            expected_out = 1024 ** (level + 1)
-            cache_root = Path(os.environ.get('XDG_CACHE_HOME')
-                              or os.path.expanduser('~/.cache')) / 'redstars-helper' / 'decoded'
-            cache_root.mkdir(parents=True, exist_ok=True)
-            free = shutil.disk_usage(cache_root).free
-            if target_size and int(target_size) > 0:
-                # Si on connaît la vraie sortie utile, on check ça (Red3
-                # d'un 11 GiB tar n'a besoin que de 11 GiB libre).
-                needed = int(target_size)
-            else:
-                needed = expected_out
-            if free < int(needed * 1.1):
-                self._json(507, {
-                    'error': 'not enough free disk',
-                    'expected_output_bytes': needed,
-                    'free_bytes': free,
-                    'path': str(cache_root),
-                }); return
-            # Spawn worker thread, retourne le job_id au caller.
-            job_id = _new_job('redDEC-chain')
-            t = threading.Thread(
-                target=_redDEC_chain_worker,
-                args=(job_id, hash_hex, level, name, target_size),
-                daemon=True,
-                name=f'redDEC-{job_id[:8]}',
-            )
-            t.start()
-            self._json(202, {'ok': True, 'job_id': job_id, 'level': level})
             return
 
 
@@ -2546,81 +1642,6 @@ def _serve_thread(server, label):
         print(f'  {label} crashed: {e}')
 
 
-def _route_int8_if_safe():
-    """Android : route le décode codec vers le modèle INT8 (NPU) via CodecGpu,
-    mais UNIQUEMENT si l'int8 est bit-exact vs float sur CE device (sinon perte
-    silencieuse car le sidecar est calculé pour le float). Vérifié au démarrage
-    par un petit benchInt8 (mismatch=0). Sinon le décode reste sur numpy."""
-    if os.environ.get('REDSTARS_HELPER_PLATFORM') != 'android':
-        return
-    try:
-        import numpy as _np
-        import codec_numpy
-        from com.redstars.app import CodecGpu
-        st = str(CodecGpu.status())
-        if 'error' in st or 'int8=none' in st or 'int8=absent' in st:
-            print(f'  [int8] indisponible ({st}) — decode reste numpy'); return
-        bench = str(CodecGpu.benchInt8(64))
-        if 'mismatch=0/' not in bench:
-            print(f'  [int8] NON bit-exact sur ce device — decode reste numpy ({bench[:90]})'); return
-        _orig = codec_numpy._dec_bytes
-        def _dec_int8(lat_bytes):
-            try:
-                return _np.frombuffer(bytes(CodecGpu.decodeI8(bytes(lat_bytes))), _np.uint8)
-            except Exception:
-                return _orig(lat_bytes)
-        codec_numpy._dec_bytes = _dec_int8
-        print(f'  [int8] decode route vers INT8/NPU (bit-exact OK) — {st} | {bench[:90]}')
-    except Exception as e:
-        print(f'  [int8] routage echoue ({type(e).__name__}: {e}) — decode reste numpy')
-
-
-def _route_gpu_if_available():
-    """Desktop : route le codec (enc + dec + sidecar) vers onnxruntime + l'EP GPU de
-    l'OS (Windows=DirectML, macOS=CoreML, Linux=CUDA/ROCm), fallback CPU auto. codec.onnx
-    est bit-exact vs numpy ; on RE-vérifie au démarrage sur ce device AVANT de router.
-    Android exclu (le codec y passe déjà par le NPU via CodecGpu)."""
-    if os.environ.get('REDSTARS_HELPER_PLATFORM') == 'android':
-        return
-    try:
-        import platform
-        import numpy as _np
-        import onnxruntime as _ort
-        import codec_numpy
-        import codec_ort
-        sysn = platform.system()
-        if sysn == 'Windows':
-            prefer = ['DmlExecutionProvider']
-        elif sysn == 'Darwin':
-            prefer = ['CoreMLExecutionProvider']
-        else:
-            prefer = ['CUDAExecutionProvider', 'ROCMExecutionProvider']
-        avail = set(_ort.get_available_providers())
-        gpu = [p for p in prefer if p in avail]
-        # self-check bit-exact vs numpy AVANT de router (sur du bruit, 4 patches)
-        rng = _np.random.default_rng(0)
-        raw = rng.integers(0, 256, 4096, dtype=_np.uint8)
-        _, lat = codec_ort.enc_blocks(raw, providers=prefer)
-        _, lat_ref = codec_numpy._enc_blocks(raw)
-        dec = _np.asarray(codec_ort.dec_bytes(bytes(lat), providers=prefer), _np.uint8)
-        dec_ref = _np.asarray(codec_numpy._dec_bytes(bytes(lat_ref)), _np.uint8)
-        if bytes(lat) != bytes(lat_ref) or not _np.array_equal(dec, dec_ref):
-            print('  [gpu] codec.onnx NON bit-exact vs numpy ici — codec reste numpy'); return
-        # route enc + dec + sidecar (dec_forward), comme le NPU côté Android
-        codec_numpy._enc_blocks = lambda r: codec_ort.enc_blocks(r, providers=prefer)
-        codec_numpy._dec_bytes = lambda l: codec_ort.dec_bytes(l, providers=prefer)
-        def _dfwd(z):
-            _lat = _np.packbits(z.reshape(len(z), -1), axis=1).tobytes()
-            return _np.asarray(codec_ort.dec_bytes(_lat, providers=prefer),
-                               _np.uint8).reshape(len(z), 32, 32)
-        codec_numpy.dec_forward = _dfwd
-        ep = gpu[0] if gpu else 'CPU (aucun EP GPU ici)'
-        print(f'  [gpu] codec route vers onnxruntime — EP={ep} (fallback CPU, bit-exact OK)')
-    except Exception as e:
-        print(f'  [gpu] routage echoue ({type(e).__name__}: {e}) — codec reste numpy')
-
-
-
 # ============================================================================
 # RedStars en console — le client terminal, replié dans helper.py
 # ============================================================================
@@ -2724,7 +1745,6 @@ def _con_frame(app_url, token, **q):
         return _con_req(url, headers={"Authorization": f"Bearer {token}"})
     except urllib.error.HTTPError as e:
         return {"error": json.loads(e.read() or b"{}").get("error", f"HTTP {e.code}")}
-
 
 
 # ── La session, conservée ────────────────────────────────────────────────────
@@ -3359,7 +2379,6 @@ def _con_run_accessible(app_url, token, app, org, role, slot, lang):
         print("Tapez un numéro, ou 0 pour revenir.")
 
 
-
 # ── Handoff console : le navigateur a le jeton, nous avons le terminal ───────
 #
 # Le raccourci évident était `redstars-helper://console?token=eyJ…` : le
@@ -3598,7 +2617,7 @@ def _con_offset(cols, rows, center):
 
 # img_render (décodeur nn: + rendu quadrant) vit CÔTÉ BUNDLE TAURI, pas dans helper.py :
 # numpy/onnxruntime + le modèle 3,7 Mo y sont, pour que helper.py (signé, auto-updaté seul
-# dans le cache OS) reste léger. On le découvre dans le bundle exactement comme les codecs —
+# dans le cache OS) reste léger. On le cherche dans le bundle Tauri —
 # helper.py auto-updaté n'a PAS img_render.py à côté de lui, il faut aller le chercher.
 _IMG = {'mod': None, 'tried': False}
 
@@ -3913,9 +2932,6 @@ def run_console(argv):
             return
 
 
-
-
-
 def _auto_update_loop(api_base, first_delay=8, period=6 * 3600):
     """Se mettre à jour TOUT SEUL. C'est censé être la définition d'un auto-update.
 
@@ -4033,9 +3049,6 @@ def main():
               f'un helper tourne déjà, rien à démarrer.', file=sys.stderr)
         return
     print(f'redstars-helper {VERSION}')
-    print(f'  static files from {DEMO_DIR}')
-    _route_int8_if_safe()   # Android : décode codec via INT8/NPU si bit-exact
-    _route_gpu_if_available()  # Desktop : codec via onnxruntime + EP GPU de l'OS (sinon CPU)
 
     # Se tenir à jour, sans qu'on le lui demande.
     _auto_update_loop(os.environ.get('REDSTARS_API_BASE', 'https://api.dev.redstars.redlinks.fr'))
