@@ -37,7 +37,10 @@
     "resources": [
       "bundled/helper.py",
       "bundled/cert.pem",
-      "bundled/key.pem"
+      "bundled/key.pem",
+      "bundled/img_render.py",
+      "bundled/decoder.graph.onnx",
+      "bundled/decoder.int8"
     ],
     "linux": {
       "deb": {
