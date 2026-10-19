@@ -1209,7 +1209,6 @@ fn console_argv(exe: &Path, tokfile: &Path, opts: &Value) -> Vec<String> {
 /// Ouvre un émulateur de terminal qui lance la console avec `token` (et les
 /// options JSON de POST /helper/console). Renvoie le nom du terminal utilisé,
 /// ou None si aucun n'a été trouvé. Ne renvoie JAMAIS le jeton.
-#[allow(dead_code)] // appelé par le serveur local (POST /helper/console, src/helper/)
 pub fn spawn_terminal(token: &str, opts: &serde_json::Value) -> Option<String> {
     let tokfile = token_file(token).ok()?;
     let argv = console_argv(&self_exe(), &tokfile, opts);

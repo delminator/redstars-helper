@@ -69,40 +69,6 @@ fn semver_cmp(a: &str, b: &str) -> std::cmp::Ordering {
     std::cmp::Ordering::Equal
 }
 
-/// Returns the path the helper script should be loaded from RIGHT NOW.
-/// Never returns None — we always fall back to the bundled copy. If the
-/// bundle is missing too (broken install), returns the cache path even
-/// though it doesn't exist yet so the caller logs a useful error.
-pub fn current_script_path(app: &AppHandle) -> PathBuf {
-    // 1. Dev override
-    if let Ok(local) = env::var("REDSTARS_HELPER_LOCAL") {
-        let p = PathBuf::from(local);
-        if p.is_file() {
-            eprintln!("[script-updater] using REDSTARS_HELPER_LOCAL={}", p.display());
-            return p;
-        }
-        eprintln!("[script-updater] REDSTARS_HELPER_LOCAL is set but file is missing: {}", p.display());
-    }
-    // 2. Cached copy from a previous successful fetch
-    if let Some(p) = cache_path(app) {
-        if p.is_file() {
-            return p;
-        }
-    }
-    // 3. Bundled fallback. Resources are registered under `bundled/`
-    // in tauri.conf.json so the resolve path must include that prefix —
-    // a bare `SCRIPT_NAME` lands at `<resourceDir>/helper.py` and the
-    // file isn't there, so the daemon never starts.
-    let bundled = format!("bundled/{}", SCRIPT_NAME);
-    if let Ok(p) = app.path().resolve(&bundled, tauri::path::BaseDirectory::Resource) {
-        if p.is_file() {
-            return p;
-        }
-    }
-    // 4. Last-resort path (caller logs)
-    cache_path(app).unwrap_or_else(|| PathBuf::from(SCRIPT_NAME))
-}
-
 /// Path to the cached script in the OS-appropriate per-user data dir.
 fn cache_path(app: &AppHandle) -> Option<PathBuf> {
     let dir = app.path().app_local_data_dir().ok()?;

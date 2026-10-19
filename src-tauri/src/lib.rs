@@ -16,7 +16,7 @@ mod shell_updater;
 use std::process::Command;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 /// Tray → « Ouvrir RedStars en console ».
 ///
@@ -177,7 +177,7 @@ fn refresh_cert(app: &AppHandle) {
     if script_updater::fetch_and_cache(app) {
         eprintln!("[helper] nouveau helper.py signé — rechargement du certificat");
     }
-    helper::server::reload_tls();
+    helper::reload_tls();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -241,7 +241,7 @@ pub fn run() {
             let _ = script_updater::fetch_and_cache(&handle);
             {
                 let h = handle.clone();
-                helper::server::set_update_hook(Box::new(move || shell_updater::check_now(&h)));
+                helper::set_update_hook(Box::new(move || shell_updater::check_now(&h)));
                 let h = handle.clone();
                 // Plus aucun site ouvert depuis 12 min : on quitte, tray compris.
                 // Le site relance le helper via redstars-helper:// à la prochaine visite.
@@ -287,7 +287,7 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while building tauri app")
-        .run(|app, event| {
+        .run(|_app, event| {
             if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
                 // Tray-only agent: there are no windows, so a code-less exit
                 // request is spurious (e.g. a stray "last window closed") —
