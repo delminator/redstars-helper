@@ -58,6 +58,9 @@ crossterm = "0.28"
 rpassword = "7"
 # Décodeur d'images nn: (src/img/) : ONNX en Rust pur, aucune lib native à livrer.
 tract-onnx = "0.21"
+# Même version que celle tirée par tract-onnx : seulement pour activer le produit matriciel
+# multi-thread (rayon) — décodage 2,2× plus rapide (837 → 389 ms sur 8 threads).
+tract-linalg = { version = "0.21", features = ["multithread-mm"] }
 
 [profile.release]
 panic = "abort"
