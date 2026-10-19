@@ -56,6 +56,8 @@ regex = "1"
 # Client console (src/console/) : terminal portable (raw mode, touches, taille).
 crossterm = "0.28"
 rpassword = "7"
+# Fuseau local (paramètre `tz` des trames) ; déjà dans le Cargo.lock via tauri.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Décodeur d'images nn: (src/img/) : ONNX en Rust pur, aucune lib native à livrer.
 tract-onnx = "0.21"
 

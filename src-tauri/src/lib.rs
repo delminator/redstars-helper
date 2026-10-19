@@ -49,9 +49,8 @@ pub(crate) fn clean_python_command(py: &str) -> Command {
 /// Tray → « Ouvrir RedStars en console ».
 ///
 /// Le helper est un agent sans fenêtre : il n'a pas de webview où afficher quoi
-/// que ce soit. Il ouvre donc un ÉMULATEUR DE TERMINAL et y lance
-/// `helper.py console` — c'est-à-dire le client replié dans le script
-/// auto-mis-à-jour, pas un binaire séparé qui dériverait.
+/// que ce soit. Il ouvre donc un ÉMULATEUR DE TERMINAL et y relance son propre
+/// binaire en `console` — le client console natif (src/console/).
 ///
 /// Le choix du terminal est une liste d'essais, dans cet ordre : ce que
 /// l'utilisateur a déclaré (`$TERMINAL`), puis les émulateurs courants. Il n'y a
@@ -60,14 +59,11 @@ pub(crate) fn clean_python_command(py: &str) -> Command {
 ///
 /// Si aucun n'est trouvé, on le DIT (stderr) plutôt que d'échouer en silence :
 /// un item de menu qui ne réagit pas est pire qu'un item absent.
-fn open_console(app: &AppHandle) {
-    let script = script_updater::current_script_path(app);
-    let py = python_candidates()
-        .into_iter()
-        .find(|p| !p.starts_with('/') || std::path::Path::new(p).is_file())
-        .unwrap_or_else(|| "python3".to_string());
-
-    let cmd = format!("{} {} console", py, script.display());
+fn open_console(_app: &AppHandle) {
+    // Le client console est natif : on relance CE binaire (ou l'AppImage qui le
+    // porte) avec la sous-commande `console`. Plus de python ni de helper.py.
+    let exe = console::self_exe();
+    let cmd = format!("{} console", console::shell_quote(&exe.to_string_lossy()));
 
     // `-e` est le drapeau « exécute cette commande » de presque tous les
     // émulateurs. foot/alacritty/kitty le prennent tel quel ; les terminaux
@@ -94,9 +90,10 @@ fn open_console(app: &AppHandle) {
         for a in &pre {
             c.arg(a);
         }
-        // `sh -lc` pour que le shell de connexion soit chargé (PATH, pyenv…) et
-        // que le terminal ne se referme pas à la seconde où le client rend la main.
+        // `sh -lc` pour que le shell de connexion soit chargé et que le terminal
+        // ne se referme pas à la seconde où le client rend la main.
         c.arg("sh").arg("-lc").arg(format!("{cmd}; echo; read -p 'Entrée pour fermer…' _"));
+        console::clean_env(&mut c);
         if c.spawn().is_ok() {
             eprintln!("[helper] console ouverte via {term}");
             return;
