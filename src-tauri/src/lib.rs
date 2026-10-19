@@ -3,6 +3,12 @@
 
 mod cleanup;
 #[cfg(desktop)]
+mod console;
+#[cfg(desktop)]
+mod helper;
+#[cfg(desktop)]
+mod img;
+#[cfg(desktop)]
 mod cli;
 mod script_updater;
 mod shell_updater;

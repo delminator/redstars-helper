@@ -39,6 +39,26 @@ minisign-verify = "0.2"
 # probes (keeps the release binary lean).
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 
+# ── Helper natif (portage de helper.py en Rust, v1.0) ──────────────────────
+# Serveur HTTP/HTTPS local /helper/* (src/helper/).
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time", "process", "sync", "fs", "io-util"] }
+axum = "0.8"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
+dirs = "6"
+which = "7"
+fs2 = "0.4"
+# Balance série (CH340/FTDI/CP210x). Sans libudev : énumération inutile, on
+# ouvre le port connu, et ça évite une dépendance système au build.
+serialport = { version = "4", default-features = false }
+regex = "1"
+# Client console (src/console/) : terminal portable (raw mode, touches, taille).
+crossterm = "0.28"
+rpassword = "7"
+# Décodeur d'images nn: (src/img/) : ONNX en Rust pur, aucune lib native à livrer.
+tract-onnx = "0.21"
+
 [profile.release]
 panic = "abort"
 codegen-units = 1
