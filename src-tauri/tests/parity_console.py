@@ -188,6 +188,10 @@ def make_env(tmp, trace, seed):
         "REDSTARS_CONSOLE_TRACE": trace,
         "PYTHONIOENCODING": "utf-8",
     }
+    # COLORTERM=truecolor ⇒ les deux clients annoncent img=1 et décodent les
+    # images nn: — c'est ce qui exerce le décodeur (img_render ⇄ src/img).
+    if os.environ.get("COLORTERM"):
+        env["COLORTERM"] = os.environ["COLORTERM"]
     return env
 
 

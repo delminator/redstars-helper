@@ -67,7 +67,10 @@ tract-onnx = "0.21"
 tract-linalg = { version = "0.21", features = ["multithread-mm"] }
 
 [profile.release]
-panic = "abort"
+# unwind, pas abort : le helper est un serveur permanent. Un bug dans une
+# route ou dans la console doit tuer CETTE requête (tokio/catch_unwind), pas
+# le tray entier.
+panic = "unwind"
 codegen-units = 1
 lto = true
 opt-level = "s"
