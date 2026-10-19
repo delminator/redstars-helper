@@ -15,7 +15,8 @@
 # Désinstaller     : `… | sh -s -- --uninstall`.
 #
 # Les paquets .deb/.rpm apportent en plus la règle udev de la balance série,
-# la dépendance python3 et l'enregistrement du schéma redstars-helper://.
+# et l'enregistrement du schéma redstars-helper://. Plus besoin de python3
+# depuis la 1.0 : le helper est natif.
 # L'AppImage, elle, est le seul format qui se met à jour tout seul ensuite et
 # le seul qui marche sur un OS immuable.
 
@@ -199,13 +200,6 @@ EOF
         && update-desktop-database "$(dirname "$DESKTOP_FILE")" >/dev/null 2>&1 || true
 }
 
-# --- python3 (l'app en a besoin) -------------------------------------------
-check_python() {
-    command -v python3 >/dev/null 2>&1 && return
-    warn "python3 introuvable — le helper en a besoin pour tourner. Installez-le :"
-    warn "  Fedora: sudo dnf install python3   ·   Debian/Ubuntu: sudo apt install python3"
-}
-
 # --- installateurs ---------------------------------------------------------
 sudo_run() {
     if [ "$(id -u)" -eq 0 ]; then "$@"; return; fi
@@ -233,7 +227,6 @@ install_appimage() {
     log "Installé : $APPIMAGE_PATH"
     install_launchers "$APPIMAGE_PATH"
     write_desktop_entry "$APPIMAGE_PATH"
-    check_python
     log "Fait. Dans un nouveau terminal :  redhelper console   (ou : minitel)"
     log "L'app apparaît aussi dans le menu (Redstars Helper) et démarre au login."
 }

@@ -13,39 +13,11 @@ mod cli;
 mod script_updater;
 mod shell_updater;
 
-use std::process::{Child, Command};
-use std::sync::Mutex;
+use std::process::Command;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager};
 
-
-struct HelperProc(Mutex<Option<Child>>);
-
-/// Build a `Command` for a python interpreter with the AppImage runtime's
-/// injected variables stripped. When we run inside an AppImage, AppRun exports
-/// LD_LIBRARY_PATH / PYTHONHOME / PYTHONPATH / LD_PRELOAD pointing into the
-/// bundle; a child *system* python3 then inherits them and fails to find its
-/// own stdlib ("No module named 'encodings'"). Removing them lets the system
-/// interpreter initialise normally. Harmless when not running as an AppImage
-/// (these are rarely set, and a system python needs none of them).
-pub(crate) fn clean_python_command(py: &str) -> Command {
-    let mut c = Command::new(py);
-    for var in ["LD_LIBRARY_PATH", "PYTHONHOME", "PYTHONPATH", "LD_PRELOAD"] {
-        c.env_remove(var);
-    }
-    c
-}
-
-/// Spawn helper.py from whichever copy is currently authoritative —
-/// dev-override > cached fetched from GitHub > bundled fallback. See
-/// `script_updater::current_script_path` for the resolution order.
-///
-/// Python lookup tries multiple candidates in order: pyenv shims first
-/// (some users override system python that way, and desktop-app spawn
-/// inherits a stripped PATH without ~/.pyenv/shims), then a bare name
-/// for PATH resolution, then common system locations. First successful
-/// spawn wins.
 /// Tray → « Ouvrir RedStars en console ».
 ///
 /// Le helper est un agent sans fenêtre : il n'a pas de webview où afficher quoi
@@ -105,35 +77,6 @@ fn open_console(app: &AppHandle) {
     eprintln!("[helper] aucun émulateur de terminal trouvé — définissez $TERMINAL, ou lancez : {cmd}");
 }
 
-fn spawn_helper(app: &AppHandle) -> Option<Child> {
-    let script = script_updater::current_script_path(app);
-    for py in python_candidates() {
-        // Absolute path: cheap existence check before fork.
-        if py.starts_with('/') && !std::path::Path::new(&py).is_file() {
-            continue;
-        }
-        // Sanity-probe the interpreter first. A python can exec fine yet crash
-        // instantly at startup ("No module named 'encodings'") — either a
-        // pyenv shim with an incomplete env, or a system python3 poisoned by
-        // the AppImage runtime's injected vars (handled by clean_python_command
-        // below). `-c pass` exits 0 only when the interpreter really starts.
-        match clean_python_command(&py).arg("-c").arg("pass").output() {
-            Ok(out) if out.status.success() => {}
-            _ => {
-                eprintln!("[helper] {} failed sanity probe, skipping", py);
-                continue;
-            }
-        }
-        eprintln!("[helper] trying {} {}", py, script.display());
-        if let Ok(child) = clean_python_command(&py).arg("-u").arg(&script).spawn() {
-            eprintln!("[helper] spawned via {}", py);
-            return Some(child);
-        }
-    }
-    eprintln!("[helper] no usable python found; user must install python3");
-    None
-}
-
 /// Make this process the ONLY helper on the machine: terminate any
 /// other running helper shell and any orphan `helper.py` a previous
 /// shell may have left holding port 49080.
@@ -147,8 +90,8 @@ fn spawn_helper(app: &AppHandle) -> Option<Child> {
 /// dashboard's `redstars-helper://` button — are never simultaneous to
 /// the millisecond anyway).
 ///
-/// We must run this BEFORE spawning our own python child, so the port
-/// is free when our helper.py binds it. We match two shapes, mirroring
+/// We must run this BEFORE starting our own server, so ports 49080/49443
+/// are free — an older shell's python helper.py may still hold them. We match two shapes, mirroring
 /// `scripts/preinst.sh`: the shell binary (by exe file name, robust to
 /// the 15-char `comm` truncation on Linux) and any python whose command
 /// line references `helper.py`.
@@ -229,49 +172,15 @@ fn terminate_other_helpers() {
     }
 }
 
-/// Restart helper subprocess in place (kill + respawn). Used by the
-/// background updater after a new script version is cached, and by the
-/// tray "Restart helper" menu item.
-fn restart_helper_proc(app: &AppHandle) {
-    let s = app.state::<HelperProc>();
-    let mut g = s.0.lock().unwrap();
-    if let Some(mut c) = g.take() {
-        let _ = c.kill();
-        let _ = c.wait();
+/// Le helper natif a-t-il de quoi se mettre à jour ? Le certificat HTTPS de
+/// local.redlinks.fr voyage dans le helper.py signé publié à chaque
+/// renouvellement : on le télécharge (canal script-py, inchangé pour les
+/// anciens shells) et le serveur relit son certificat dedans.
+fn refresh_cert(app: &AppHandle) {
+    if script_updater::fetch_and_cache(app) {
+        eprintln!("[helper] nouveau helper.py signé — rechargement du certificat");
     }
-    *g = spawn_helper(app);
-}
-
-/// Ordered python-interpreter candidates. Pyenv shims first so users
-/// who manage python via pyenv don't get a stale system python when
-/// the desktop app's spawn environment lacks ~/.pyenv/shims in PATH.
-#[cfg(unix)]
-pub(crate) fn python_candidates() -> Vec<String> {
-    let mut v = Vec::new();
-    if let Ok(home) = std::env::var("HOME") {
-        v.push(format!("{}/.pyenv/shims/python3", home));
-        v.push(format!("{}/.pyenv/shims/python", home));
-    }
-    v.push("python3".to_string());            // PATH lookup
-    v.push("/usr/bin/python3".to_string());
-    v.push("/usr/local/bin/python3".to_string());
-    v.push("/opt/homebrew/bin/python3".to_string());  // mac arm64
-    v.push("/opt/local/bin/python3".to_string());     // macports
-    v
-}
-#[cfg(windows)]
-pub(crate) fn python_candidates() -> Vec<String> {
-    vec![
-        "python".to_string(),
-        "python3".to_string(),
-        "py".to_string(),
-    ]
-}
-
-#[tauri::command]
-fn restart_helper(app: AppHandle, _proc: State<HelperProc>) -> Result<(), String> {
-    restart_helper_proc(&app);
-    Ok(())
+    helper::server::reload_tls();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -295,8 +204,6 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--minimized"]),
         ))
-        .manage(HelperProc(Mutex::new(None)))
-        .invoke_handler(tauri::generate_handler![restart_helper])
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -330,20 +237,26 @@ pub fn run() {
             // best-effort — see cleanup.rs.
             cleanup::run(&handle);
 
-            // Pull the latest helper.py from GitHub before we spawn it.
-            // Sync call with a short timeout — if GitHub is slow we fall
-            // back to the cached or bundled copy and the background
-            // poller will catch up later.
+            // Certificat d'abord (synchrone, délai court : si GitHub traîne on
+            // démarre avec le certificat déjà en cache ou embarqué), puis le
+            // helper natif. Plus de Python : les routes /helper/* sont servies
+            // par ce processus.
             let _ = script_updater::fetch_and_cache(&handle);
+            {
+                let h = handle.clone();
+                helper::server::set_update_hook(Box::new(move || shell_updater::check_now(&h)));
+                let h = handle.clone();
+                // Plus aucun site ouvert depuis 12 min : on quitte, tray compris.
+                // Le site relance le helper via redstars-helper:// à la prochaine visite.
+                helper::start(Box::new(move || {
+                    eprintln!("[helper] aucun signe du site — arrêt");
+                    h.exit(0);
+                }));
+            }
 
-            let child = spawn_helper(&handle);
-            *app.state::<HelperProc>().0.lock().unwrap() = child;
-
-            // Background poller: every 6 h, fetch + verify + cache. On
-            // a successful update, kill the running python3 subprocess
-            // and respawn it pointing at the new script.
+            // Toutes les 6 h : nouveau helper.py signé ⇒ nouveau certificat.
             script_updater::start_background_poller(handle.clone(), |app| {
-                restart_helper_proc(app);
+                refresh_cert(app);
             });
 
             // Shell self-update (the Tauri binary itself): check now + every
@@ -356,7 +269,7 @@ pub fn run() {
                 app,
                 &[
                     &MenuItem::with_id(app, "console", "Ouvrir RedStars en console", true, None::<&str>)?,
-                    &MenuItem::with_id(app, "restart", "Restart helper", true, None::<&str>)?,
+                    &MenuItem::with_id(app, "restart", "Recharger le certificat", true, None::<&str>)?,
                     &MenuItem::with_id(app, "update", "Check for updates", true, None::<&str>)?,
                     &MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?,
                 ],
@@ -367,12 +280,7 @@ pub fn run() {
                 .tooltip("Redstars Helper")
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "console" => { open_console(app); }
-                    "restart" => {
-                        // Pull a fresh copy first, then restart with whichever
-                        // is now current (cached vs bundled fallback).
-                        let _ = script_updater::fetch_and_cache(app);
-                        restart_helper_proc(app);
-                    }
+                    "restart" => { refresh_cert(app); }
                     "update" => { shell_updater::check_now(app); }
                     "quit" => { app.exit(0); }
                     _ => {}
@@ -386,18 +294,10 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
                 // Tray-only agent: there are no windows, so a code-less exit
                 // request is spurious (e.g. a stray "last window closed") —
-                // keep running. An explicit quit from the tray uses
-                // app.exit(0) (code = Some) and is allowed through, tearing
-                // down the helper subprocess on the way out.
+                // keep running. An explicit quit (tray, idle exit) uses
+                // app.exit(0) (code = Some) and is allowed through.
                 if code.is_none() {
                     api.prevent_exit();
-                    return;
-                }
-                let s = app.state::<HelperProc>();
-                let mut g = s.0.lock().unwrap();
-                if let Some(mut c) = g.take() {
-                    let _ = c.kill();
-                    let _ = c.wait();
                 }
             }
         });
