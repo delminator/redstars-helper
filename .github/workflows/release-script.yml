@@ -104,12 +104,11 @@ jobs:
           body: |
             Auto-updatable `helper.py` for the Tauri shell.
 
-            **What this is:** a signed snapshot of the Python logic that
-            runs the local HTTP helper (USB scale, Firefox prefs writer,
-            demo HTTP server). The Tauri shell (any version ≥ 0.2.6)
-            downloads this file on startup + every 6 h, verifies the
-            minisign signature, and runs it. Users do not need to
-            reinstall the shell when this script updates.
+            **What this is:** a signed snapshot of the Python helper run by
+            Tauri shells 0.2.6 → 0.4.x (they download it on startup + every
+            6 h, verify the minisign signature, and run it). Shells ≥ 1.0
+            are native and only read the local.redlinks.fr certificate
+            embedded in this file.
 
             **Assets:**
             - `helper.py` — the script itself
@@ -127,3 +126,8 @@ jobs:
             out/script-latest.json
           draft: false
           prerelease: false
+          # JAMAIS « Latest » : le shell lit son flux de mise à jour dans
+          # releases/latest/download/latest.json. Une release de script marquée
+          # Latest le fait tomber en 404 — c'est ce qui a coupé la mise à jour
+          # automatique de tous les shells du 16 juillet au 19 octobre 2026.
+          make_latest: false
