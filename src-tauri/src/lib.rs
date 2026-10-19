@@ -93,7 +93,7 @@ fn open_console(_app: &AppHandle) {
 /// the 15-char `comm` truncation on Linux) and any python whose command
 /// line references `helper.py`.
 fn terminate_other_helpers() {
-    use sysinfo::{Pid, ProcessesToUpdate, System};
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
     let self_pid = match sysinfo::get_current_pid() {
         Ok(p) => p,
@@ -113,7 +113,17 @@ fn terminate_other_helpers() {
     // usually minutes — older. So we only ever retire helpers that started
     // clearly before us.
     let mut sys = System::new();
-    sys.refresh_processes(ProcessesToUpdate::All, true);
+    // La ligne de commande DOIT être demandée : `refresh_processes` ne la lit
+    // pas (mémoire/CPU/disque/exe seulement), et sans elle `is_helper_py` est
+    // toujours faux — un helper.py orphelin d'un ancien shell gardait alors
+    // les ports 49080/49443 et le helper natif ne pouvait pas démarrer.
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::All,
+        true,
+        ProcessRefreshKind::nothing()
+            .with_cmd(UpdateKind::Always)
+            .with_exe(UpdateKind::Always),
+    );
 
     let self_start = sys.process(self_pid).map(|p| p.start_time());
 
