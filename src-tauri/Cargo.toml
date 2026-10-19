@@ -43,7 +43,9 @@ sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 # Serveur HTTP/HTTPS local /helper/* (src/helper/).
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "time", "process", "sync", "fs", "io-util"] }
 axum = "0.8"
-axum-server = { version = "0.7", features = ["tls-rustls"] }
+# tls-rustls-no-provider + rustls/ring : pas d'aws-lc-rs (cmake/nasm au build Windows).
+axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"

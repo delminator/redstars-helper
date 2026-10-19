@@ -82,6 +82,7 @@ pub fn intercept() {
             Some("upgrade") | Some("install") => {
                 std::process::exit(run_upgrade(&args[2.min(args.len())..]));
             }
+            Some("serve") => std::process::exit(crate::helper::serve_foreground()),
             Some("help") | Some("--help") | Some("-h") => {
                 print_usage();
                 std::process::exit(0);
